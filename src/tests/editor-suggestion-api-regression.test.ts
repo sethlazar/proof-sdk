@@ -33,6 +33,11 @@ function run(): void {
       && setTrackChangesViewModeBlock.includes('this.trackChangesViewMode = setSuggestionDisplayMode(view, nextMode);'),
     'Expected setTrackChangesViewMode to persist and dispatch the marks plugin display mode',
   );
+  assert(
+    editorSource.includes("addModeItem('No markup'")
+      && editorSource.includes("addModeItem('Original'"),
+    'Expected the share menu to expose the extra Word-style track-changes modes',
+  );
 
   const rejectSuggestionBlock = sliceBetween(editorSource, '  rejectSuggestion(id: string): boolean {', '\n  /**');
   assert(rejectSuggestionBlock.includes('return this.markReject(String(id));'), 'Expected rejectSuggestion to delegate to markReject');

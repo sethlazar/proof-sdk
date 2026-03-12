@@ -49,12 +49,14 @@ export interface MarksPluginState {
   activeMarkId: string | null;
   composeAnchorRange?: MarkRange | null;
   suggestionDisplayMode: SuggestionDisplayMode;
+  marks: Mark[];
+  decorations: DecorationSet;
 }
 
 export const marksPluginKey = new PluginKey<MarksPluginState>('marks');
 
 export const marksCtx = $ctx<MarksPluginState, 'marks'>(
-  { metadata: {}, activeMarkId: null, composeAnchorRange: null },
+  { metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all', marks: [], decorations: DecorationSet.empty },
   'marks'
 );
 
@@ -67,7 +69,7 @@ export interface ResolvedMark extends Mark {
   resolvedRanges?: MarkRange[];
 }
 
-export type SuggestionDisplayMode = 'all' | 'simple';
+export type SuggestionDisplayMode = 'all' | 'simple' | 'no-markup' | 'original';
 
 // ============================================================================
 // Helpers
@@ -137,7 +139,8 @@ function hashStringFNV1a(value: string): string {
 }
 
 function normalizeSuggestionDisplayMode(mode: unknown): SuggestionDisplayMode {
-  return mode === 'simple' ? 'simple' : 'all';
+  if (mode === 'simple' || mode === 'no-markup' || mode === 'original') return mode;
+  return 'all';
 }
 
 function getHydrationDocumentId(): string | null {
@@ -243,6 +246,7 @@ type AnchorInfo = {
   by: string;
   from: number;
   to: number;
+  ranges: MarkRange[];
   attrMeta?: Partial<StoredMark>;
 };
 
@@ -1023,12 +1027,21 @@ function buildSuggestionData(
   } as DeleteData;
 }
 
+function appendAnchorRange(ranges: MarkRange[], from: number, to: number): void {
+  const last = ranges[ranges.length - 1];
+  if (last && from <= last.to) {
+    last.to = Math.max(last.to, to);
+    return;
+  }
+  ranges.push({ from, to });
+}
+
 function buildAnchorMarks(
   doc: ProseMirrorNode,
   metadata: Record<string, StoredMark>
-): Mark[] {
+): ResolvedMark[] {
   const anchors = new Map<string, AnchorInfo>();
-  const authored: Mark[] = [];
+  const authored: ResolvedMark[] = [];
   const authoredMetadataIds = new Map<string, string>();
 
   for (const [id, stored] of Object.entries(metadata)) {
@@ -1061,11 +1074,12 @@ function buildAnchorMarks(
           if (existing) {
             existing.from = Math.min(existing.from, from);
             existing.to = Math.max(existing.to, to);
+            appendAnchorRange(existing.ranges, from, to);
             existing.attrMeta = existing.attrMeta
               ? { ...existing.attrMeta, ...attrMeta }
               : attrMeta;
           } else {
-            anchors.set(id, { id, kind, by, from, to, attrMeta });
+            anchors.set(id, { id, kind, by, from, to, ranges: [{ from, to }], attrMeta });
           }
           break;
         }
@@ -1077,8 +1091,9 @@ function buildAnchorMarks(
           if (existing) {
             existing.from = Math.min(existing.from, from);
             existing.to = Math.max(existing.to, to);
+            appendAnchorRange(existing.ranges, from, to);
           } else {
-            anchors.set(id, { id, kind: 'comment', by, from, to });
+            anchors.set(id, { id, kind: 'comment', by, from, to, ranges: [{ from, to }] });
           }
           break;
         }
@@ -1090,8 +1105,9 @@ function buildAnchorMarks(
           if (existing) {
             existing.from = Math.min(existing.from, from);
             existing.to = Math.max(existing.to, to);
+            appendAnchorRange(existing.ranges, from, to);
           } else {
-            anchors.set(id, { id, kind: 'flagged', by, from, to });
+            anchors.set(id, { id, kind: 'flagged', by, from, to, ranges: [{ from, to }] });
           }
           break;
         }
@@ -1103,8 +1119,9 @@ function buildAnchorMarks(
           if (existing) {
             existing.from = Math.min(existing.from, from);
             existing.to = Math.max(existing.to, to);
+            appendAnchorRange(existing.ranges, from, to);
           } else {
-            anchors.set(id, { id, kind: 'approved', by, from, to });
+            anchors.set(id, { id, kind: 'approved', by, from, to, ranges: [{ from, to }] });
           }
           break;
         }
@@ -1121,6 +1138,8 @@ function buildAnchorMarks(
             at: '1970-01-01T00:00:00.000Z',
             range: { from, to },
             quote,
+            resolvedRange: { from, to },
+            resolvedRanges: [{ from, to }],
             data: {},
           });
           break;
@@ -1131,7 +1150,7 @@ function buildAnchorMarks(
     return true;
   });
 
-  const marks: Mark[] = [];
+  const marks: ResolvedMark[] = [];
 
   for (const anchor of anchors.values()) {
     const pluginMeta = metadata[anchor.id];
@@ -1165,6 +1184,8 @@ function buildAnchorMarks(
       at: createdAt,
       range: { from: anchor.from, to: anchor.to },
       quote,
+      resolvedRange: anchor.ranges[0] ?? null,
+      resolvedRanges: anchor.ranges.length ? anchor.ranges : undefined,
       data,
     });
   }
@@ -1202,6 +1223,8 @@ function buildAnchorMarks(
       at: createdAt,
       range,
       quote,
+      resolvedRange: range,
+      resolvedRanges: [range],
       data,
     });
   }
@@ -1233,6 +1256,13 @@ function isMatchingAnchorMark(mark: Mark, nodeMark: { type: MarkType; attrs: Rec
 function collectAnchorRanges(doc: ProseMirrorNode, mark: Mark): MarkRange[] {
   if (mark.kind === 'authored' && mark.range) {
     return [mark.range];
+  }
+
+  if (mark.range && mark.quote) {
+    const directQuote = normalizeQuote(getTextForRange(doc, mark.range));
+    if (directQuote && directQuote === mark.quote) {
+      return [mark.range];
+    }
   }
 
   const ranges: MarkRange[] = [];
@@ -1513,6 +1543,7 @@ function buildMetadataSnapshot(
 function collectMarks(state: EditorState): Mark[] {
   const pluginState = marksPluginKey.getState(state);
   if (!pluginState) return [];
+  if (Array.isArray(pluginState.marks)) return pluginState.marks;
   return buildAnchorMarks(state.doc, pluginState.metadata);
 }
 
@@ -3062,6 +3093,10 @@ export function resolveMarks(doc: ProseMirrorNode, marks: Mark[]): ResolvedMark[
   });
 }
 
+function hasResolvedRanges(mark: Mark): mark is ResolvedMark {
+  return 'resolvedRange' in mark;
+}
+
 // ============================================================================
 // Decorations
 // ============================================================================
@@ -3095,18 +3130,21 @@ function normalizeComposeAnchorRange(range: MarkRange | null, doc: ProseMirrorNo
 }
 
 function createDecorations(
-  state: EditorState,
+  doc: ProseMirrorNode,
   marks: Mark[],
   activeMarkId: string | null,
   composeAnchorRange: MarkRange | null,
   suggestionDisplayMode: SuggestionDisplayMode
 ): DecorationSet {
   const decorations: Decoration[] = [];
-  const resolved = resolveMarks(state.doc, marks);
+  const resolved = marks.every(hasResolvedRanges)
+    ? marks
+    : resolveMarks(doc, marks);
   const primaryReplaceMarkIds = new Set<string>();
   const overlappingReplaceGroups = new Map<string, Mark[]>();
+  const now = Date.now();
 
-  const safeComposeRange = normalizeComposeAnchorRange(composeAnchorRange, state.doc);
+  const safeComposeRange = normalizeComposeAnchorRange(composeAnchorRange, doc);
   if (safeComposeRange) {
     decorations.push(
       Decoration.inline(safeComposeRange.from, safeComposeRange.to, {
@@ -3149,6 +3187,8 @@ function createDecorations(
     const ranges = mark.resolvedRanges ?? (mark.resolvedRange ? [mark.resolvedRange] : []);
     if (ranges.length === 0) continue;
     const isActive = mark.id === activeMarkId;
+    const firstRangeFrom = ranges[0]?.from ?? 0;
+    const lastRangeTo = ranges[ranges.length - 1]?.to ?? firstRangeFrom;
 
     let style = '';
     let cssClass = '';
@@ -3179,8 +3219,19 @@ function createDecorations(
         const data = mark.data as InsertData;
         if (data?.status === 'pending') {
           if (suggestionDisplayMode === 'simple') {
-            style = STYLES.insert_simple;
-            cssClass = 'mark-insert mark-simple mark-simple-insert';
+            style = '';
+            cssClass = 'mark-insert mark-simple mark-accepted-view';
+            widgetPos = firstRangeFrom;
+            widgetClassName = 'mark-simple-indicator mark-simple-insert-indicator';
+            widgetStyle = STYLES.change_indicator;
+            widgetRole = 'hidden-change-indicator';
+          } else if (suggestionDisplayMode === 'no-markup') {
+            style = '';
+            cssClass = 'mark-insert mark-no-markup mark-accepted-view';
+          } else if (suggestionDisplayMode === 'original') {
+            style = STYLES.hidden_source;
+            cssClass = 'mark-insert mark-original mark-hidden-source';
+            hideSourceContent = true;
           } else {
             style = STYLES.insert;
             cssClass = 'mark-insert';
@@ -3196,10 +3247,17 @@ function createDecorations(
             style = STYLES.hidden_source;
             cssClass = 'mark-delete mark-simple mark-hidden-source';
             hideSourceContent = true;
-            widgetPos = ranges.reduce((minPos, range) => Math.min(minPos, range.from), ranges[0]?.from ?? 0);
+            widgetPos = firstRangeFrom;
             widgetClassName = 'mark-simple-indicator mark-simple-delete-indicator';
             widgetStyle = STYLES.change_indicator;
             widgetRole = 'hidden-change-indicator';
+          } else if (suggestionDisplayMode === 'no-markup') {
+            style = STYLES.hidden_source;
+            cssClass = 'mark-delete mark-no-markup mark-hidden-source';
+            hideSourceContent = true;
+          } else if (suggestionDisplayMode === 'original') {
+            style = '';
+            cssClass = 'mark-delete mark-original mark-original-view';
           } else {
             style = STYLES.delete;
             cssClass = 'mark-delete';
@@ -3220,12 +3278,24 @@ function createDecorations(
             : null;
           if (originalQuote) {
             if (suggestionDisplayMode === 'simple') {
-              style = STYLES.insert_simple;
-              cssClass = 'mark-replace mark-insert mark-simple mark-simple-replace-current';
-              widgetPos = ranges.reduce((minPos, range) => Math.min(minPos, range.from), ranges[0]?.from ?? 0);
+              style = '';
+              cssClass = 'mark-replace mark-insert mark-simple mark-simple-replace-current mark-accepted-view';
+              widgetPos = firstRangeFrom;
               widgetClassName = 'mark-simple-indicator mark-simple-delete-indicator';
               widgetStyle = STYLES.change_indicator;
               widgetRole = 'hidden-change-indicator';
+            } else if (suggestionDisplayMode === 'no-markup') {
+              style = '';
+              cssClass = 'mark-replace mark-insert mark-no-markup mark-accepted-view';
+            } else if (suggestionDisplayMode === 'original') {
+              style = STYLES.hidden_source;
+              cssClass = 'mark-replace mark-original mark-hidden-source';
+              hideSourceContent = true;
+              widgetPos = firstRangeFrom;
+              widgetClassName = 'mark-replace-original mark-original-preview';
+              widgetStyle = '';
+              widgetText = originalQuote;
+              widgetRole = 'replace-original';
             } else {
               style = STYLES.insert;
               cssClass = 'mark-replace mark-insert';
@@ -3239,11 +3309,23 @@ function createDecorations(
             style = STYLES.hidden_source;
             cssClass = 'mark-replace mark-delete mark-simple mark-hidden-source';
             hideSourceContent = true;
-            widgetPos = ranges.reduce((minPos, range) => Math.min(minPos, range.from), ranges[0]?.from ?? 0);
-            widgetClassName = 'mark-replace-insert mark-insert mark-simple mark-simple-replace';
-            widgetStyle = STYLES.insert_simple;
+            widgetPos = firstRangeFrom;
+            widgetClassName = 'mark-replace-insert mark-simple mark-accepted-view mark-simple-replace';
+            widgetStyle = '';
             widgetText = replacementContent;
             widgetRole = 'replace-preview';
+          } else if (suggestionDisplayMode === 'no-markup') {
+            style = STYLES.hidden_source;
+            cssClass = 'mark-replace mark-no-markup mark-hidden-source';
+            hideSourceContent = true;
+            widgetPos = firstRangeFrom;
+            widgetClassName = 'mark-replace-insert mark-no-markup mark-accepted-view';
+            widgetStyle = '';
+            widgetText = replacementContent;
+            widgetRole = 'replace-preview';
+          } else if (suggestionDisplayMode === 'original') {
+            style = '';
+            cssClass = 'mark-replace mark-original mark-original-view';
           } else {
             style = STYLES.delete;
             cssClass = 'mark-replace mark-delete';
@@ -3253,10 +3335,10 @@ function createDecorations(
       }
     }
 
-    if (style) {
+    if (style || cssClass) {
       // Add glow class for newly-created marks (within last 2 seconds)
       const GLOW_DURATION_MS = 2000;
-      const markAge = Date.now() - new Date(mark.at).getTime();
+      const markAge = now - new Date(mark.at).getTime();
       const glowClass = markAge < GLOW_DURATION_MS ? 'proof-mark-new' : '';
 
       for (const { from, to } of ranges) {
@@ -3278,10 +3360,9 @@ function createDecorations(
       }
 
       if (mark.kind === 'replace' && replacementContent !== null && suggestionDisplayMode === 'all') {
-        const replaceWidgetPos = ranges.reduce((maxPos, range) => Math.max(maxPos, range.to), 0);
         decorations.push(
           Decoration.widget(
-            replaceWidgetPos,
+            lastRangeTo,
             () => {
               const span = document.createElement('span');
               span.className = ['mark-replace-insert', 'mark-insert', glowClass].filter(Boolean).join(' ');
@@ -3341,7 +3422,19 @@ function createDecorations(
     }
   }
 
-  return DecorationSet.create(state.doc, decorations);
+  return DecorationSet.create(doc, decorations);
+}
+
+function buildPresentationState(
+  doc: ProseMirrorNode,
+  metadata: Record<string, StoredMark>,
+  activeMarkId: string | null,
+  composeAnchorRange: MarkRange | null,
+  suggestionDisplayMode: SuggestionDisplayMode
+): Pick<MarksPluginState, 'marks' | 'decorations'> {
+  const marks = buildAnchorMarks(doc, metadata);
+  const decorations = createDecorations(doc, marks, activeMarkId, composeAnchorRange, suggestionDisplayMode);
+  return { marks, decorations };
 }
 
 // ============================================================================
@@ -3621,36 +3714,48 @@ export const marksPlugin = $prose(() => {
 
     state: {
       init(_config, state): MarksPluginState {
+        const metadata = normalizeMetadata({}, state.doc);
+        const presentation = buildPresentationState(state.doc, metadata, null, null, 'all');
         return {
-          metadata: normalizeMetadata({}, state.doc),
+          metadata,
           activeMarkId: null,
           composeAnchorRange: null,
           suggestionDisplayMode: 'all',
+          ...presentation,
         };
       },
 
       apply(tr, value): MarksPluginState {
         const meta = tr.getMeta(marksPluginKey);
         let nextState = value;
+        let shouldRebuildMarks = false;
+        let shouldRefreshDecorations = false;
 
         if (meta) {
           switch (meta.type) {
             case 'SET_METADATA':
               nextState = { ...value, metadata: normalizeMetadata(meta.metadata, tr.doc) };
+              shouldRebuildMarks = true;
+              shouldRefreshDecorations = true;
               break;
             case 'SET_ACTIVE':
               nextState = { ...value, activeMarkId: meta.markId };
+              shouldRefreshDecorations = true;
               break;
             case 'SET_COMPOSE_ANCHOR':
               nextState = { ...value, composeAnchorRange: normalizeComposeAnchorRange(meta.range ?? null, tr.doc) };
+              shouldRefreshDecorations = true;
               break;
             case 'SET_SUGGESTION_DISPLAY_MODE':
               nextState = { ...value, suggestionDisplayMode: normalizeSuggestionDisplayMode(meta.mode) };
+              shouldRefreshDecorations = true;
               break;
           }
         }
 
         if (tr.docChanged) {
+          shouldRebuildMarks = true;
+          shouldRefreshDecorations = true;
           const currentComposeRange = nextState.composeAnchorRange ?? null;
           const mappedComposeRange = nextState.composeAnchorRange
             ? normalizeComposeAnchorRange({
@@ -3672,6 +3777,28 @@ export const marksPlugin = $prose(() => {
           }
         }
 
+        if (shouldRebuildMarks) {
+          const presentation = buildPresentationState(
+            tr.doc,
+            nextState.metadata,
+            nextState.activeMarkId,
+            nextState.composeAnchorRange ?? null,
+            nextState.suggestionDisplayMode,
+          );
+          nextState = { ...nextState, ...presentation };
+        } else if (shouldRefreshDecorations) {
+          nextState = {
+            ...nextState,
+            decorations: createDecorations(
+              tr.doc,
+              nextState.marks,
+              nextState.activeMarkId,
+              nextState.composeAnchorRange ?? null,
+              nextState.suggestionDisplayMode,
+            ),
+          };
+        }
+
         return nextState;
       },
     },
@@ -3680,13 +3807,7 @@ export const marksPlugin = $prose(() => {
       decorations(state) {
         const pluginState = marksPluginKey.getState(state);
         if (!pluginState) return DecorationSet.empty;
-        return createDecorations(
-          state,
-          collectMarks(state),
-          pluginState.activeMarkId,
-          pluginState.composeAnchorRange ?? null,
-          pluginState.suggestionDisplayMode
-        );
+        return pluginState.decorations ?? DecorationSet.empty;
       },
     },
   });
@@ -3729,7 +3850,7 @@ export function __debugDescribeDecorations(
   style: string;
   text: string;
 }> {
-  return createDecorations(state, marks, activeMarkId, composeAnchorRange, suggestionDisplayMode)
+  return createDecorations(state.doc, marks, activeMarkId, composeAnchorRange, suggestionDisplayMode)
     .find()
     .map((decoration) => {
       const spec = decoration.spec as Record<string, unknown> | undefined;

@@ -238,7 +238,8 @@ type ProofConfigWindow = Window & {
 };
 
 function normalizeTrackChangesViewMode(value: unknown): SuggestionDisplayMode {
-  return value === 'simple' ? 'simple' : 'all';
+  if (value === 'simple' || value === 'no-markup' || value === 'original') return value;
+  return 'all';
 }
 
 function readTrackChangesViewModeFromQuery(): SuggestionDisplayMode | null {
@@ -4208,6 +4209,12 @@ class ProofEditorImpl implements ProofEditor {
       });
       addModeItem('All markup', currentTrackChangesViewMode === 'all', () => {
         this.setTrackChangesViewMode('all');
+      });
+      addModeItem('No markup', currentTrackChangesViewMode === 'no-markup', () => {
+        this.setTrackChangesViewMode('no-markup');
+      });
+      addModeItem('Original', currentTrackChangesViewMode === 'original', () => {
+        this.setTrackChangesViewMode('original');
       });
 
       container.appendChild(menu);
@@ -8978,6 +8985,16 @@ class ProofEditorImpl implements ProofEditor {
       if (!mark || !mark.range) {
         console.warn('[navigateToMark] Mark not found:', markId);
         return;
+      }
+
+      if (mark.kind === 'comment') {
+        const comments = getUnresolvedMarkComments(marks)
+          .sort((a, b) => (a.range?.from ?? 0) - (b.range?.from ?? 0));
+        this.currentCommentIndex = comments.findIndex((item) => item.id === markId);
+      } else if (mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace') {
+        const suggestions = getPendingSuggestions(marks)
+          .sort((a, b) => (a.range?.from ?? 0) - (b.range?.from ?? 0));
+        this.currentSuggestionIndex = suggestions.findIndex((item) => item.id === markId);
       }
 
       // Set as active mark (this opens the popover)

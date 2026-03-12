@@ -4516,6 +4516,165 @@ test('simple markup keeps live replace suggestions editable while indicating a h
   );
 });
 
+test('no markup keeps live replace suggestions visible without inline review chrome', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+    },
+    marks: {
+      proofSuggestion: {
+        attrs: {
+          id: { default: null },
+          kind: { default: 'replace' },
+          by: { default: 'unknown' },
+          status: { default: 'pending' },
+          createdAt: { default: null },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+    },
+  });
+
+  const markId = 'replace-live-no-markup';
+  const replaceMark = schema.marks.proofSuggestion.create({ id: markId, kind: 'replace', by: 'human:seth' });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema,
+    doc: schema.node('doc', null, [
+      schema.node('paragraph', null, [schema.text('Before '), schema.text('planet', [replaceMark]), schema.text(' after')]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'replace',
+        by: 'human:seth',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        content: 'planet',
+        originalQuote: 'world',
+        quote: 'planet',
+        status: 'pending',
+      },
+    },
+  }));
+
+  const summaries = __debugDescribeDecorations(state, getMarks(state), null, null, 'no-markup');
+  assert(
+    summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'inline-mark'
+      && summary.className.includes('mark-accepted-view')
+    ),
+    'Expected no markup to keep the live replacement text visible',
+  );
+  assert(
+    !summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'hidden-change-indicator'
+    ),
+    'Expected no markup not to render inline change indicators',
+  );
+});
+
+test('original view restores the original text for live replace suggestions', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+    },
+    marks: {
+      proofSuggestion: {
+        attrs: {
+          id: { default: null },
+          kind: { default: 'replace' },
+          by: { default: 'unknown' },
+          status: { default: 'pending' },
+          createdAt: { default: null },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+    },
+  });
+
+  const markId = 'replace-live-original-view';
+  const replaceMark = schema.marks.proofSuggestion.create({ id: markId, kind: 'replace', by: 'human:seth' });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema,
+    doc: schema.node('doc', null, [
+      schema.node('paragraph', null, [schema.text('Before '), schema.text('planet', [replaceMark]), schema.text(' after')]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'replace',
+        by: 'human:seth',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        content: 'planet',
+        originalQuote: 'world',
+        quote: 'planet',
+        status: 'pending',
+      },
+    },
+  }));
+
+  const summaries = __debugDescribeDecorations(state, getMarks(state), null, null, 'original');
+  assert(
+    summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'hidden-source'
+      && summary.className.includes('mark-hidden-source')
+    ),
+    'Expected original view to hide the live replacement text',
+  );
+  assert(
+    summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'replace-original'
+      && summary.text === 'world'
+    ),
+    'Expected original view to render the original text instead of the replacement',
+  );
+});
+
 test('simple markup collapses deletions to a compact indicator', () => {
   const schema = new Schema({
     nodes: {

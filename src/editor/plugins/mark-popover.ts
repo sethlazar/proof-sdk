@@ -21,6 +21,7 @@ import {
 import {
   getThread,
   getActorName,
+  getPendingSuggestions,
   type Mark,
   type CommentData,
   type InsertData,
@@ -260,6 +261,36 @@ class MarkPopoverController {
   private mobileStripPaddingTarget: HTMLElement | null = null;
   private mobileStripPaddingOriginal: string | null = null;
   private mobileStripPaddingBase: number | null = null;
+
+  private getAdjacentSuggestionMarkId(currentMarkId: string, direction: 'next' | 'prev'): string | null {
+    const suggestions = getPendingSuggestions(getMarks(this.view.state))
+      .sort((a, b) => (a.range?.from ?? 0) - (b.range?.from ?? 0));
+    if (suggestions.length === 0) return null;
+
+    const currentIndex = suggestions.findIndex((mark) => mark.id === currentMarkId);
+    if (currentIndex < 0) {
+      return direction === 'next'
+        ? (suggestions[0]?.id ?? null)
+        : (suggestions[suggestions.length - 1]?.id ?? null);
+    }
+    if (suggestions.length === 1) return null;
+
+    const nextIndex = direction === 'next'
+      ? (currentIndex + 1) % suggestions.length
+      : (currentIndex - 1 + suggestions.length) % suggestions.length;
+    const nextId = suggestions[nextIndex]?.id ?? null;
+    return nextId === currentMarkId ? null : nextId;
+  }
+
+  private navigateToSuggestion(markId: string | null): void {
+    if (!markId) return;
+    const proof = getProofEditorApi();
+    if (proof?.navigateToMark) {
+      proof.navigateToMark(markId);
+      return;
+    }
+    this.openForMark(markId);
+  }
 
   private isSelectionWithinEditor(selection: Selection | null): boolean {
     if (!selection || selection.rangeCount === 0) return false;
@@ -1219,10 +1250,12 @@ class MarkPopoverController {
     const actions = document.createElement('div');
     actions.className = 'mark-popover-actions';
     const canEdit = canEditInRuntime();
+    const previousMarkId = this.getAdjacentSuggestionMarkId(mark.id, 'prev');
+    const nextMarkId = this.getAdjacentSuggestionMarkId(mark.id, 'next');
 
     const applyButton = document.createElement('button');
     applyButton.type = 'button';
-    applyButton.textContent = 'Apply';
+    applyButton.textContent = 'Accept';
     installTouchSafeButton(applyButton, () => {
       if (!canEdit) return;
       const proof = getProofEditorApi();
@@ -1231,7 +1264,11 @@ class MarkPopoverController {
       } else {
         acceptSuggestion(this.view, mark.id);
       }
-      this.close();
+      if (nextMarkId) {
+        this.navigateToSuggestion(nextMarkId);
+      } else {
+        this.close();
+      }
     });
 
     const rejectButton = document.createElement('button');
@@ -1245,13 +1282,35 @@ class MarkPopoverController {
       } else {
         rejectSuggestion(this.view, mark.id);
       }
-      this.close();
+      if (nextMarkId) {
+        this.navigateToSuggestion(nextMarkId);
+      } else {
+        this.close();
+      }
     });
 
     if (canEdit) {
       actions.appendChild(applyButton);
       actions.appendChild(rejectButton);
     }
+
+    const previousButton = document.createElement('button');
+    previousButton.type = 'button';
+    previousButton.textContent = 'Previous';
+    installTouchSafeButton(previousButton, () => {
+      this.navigateToSuggestion(previousMarkId);
+    });
+    previousButton.disabled = !previousMarkId;
+    actions.appendChild(previousButton);
+
+    const nextButton = document.createElement('button');
+    nextButton.type = 'button';
+    nextButton.textContent = 'Next';
+    installTouchSafeButton(nextButton, () => {
+      this.navigateToSuggestion(nextMarkId);
+    });
+    nextButton.disabled = !nextMarkId;
+    actions.appendChild(nextButton);
 
     const closeButton = document.createElement('button');
     closeButton.type = 'button';
