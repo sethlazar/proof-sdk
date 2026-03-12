@@ -15,6 +15,8 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string): s
 
 function run(): void {
   const editorSource = readFileSync(path.resolve(process.cwd(), 'src/editor/index.ts'), 'utf8');
+  const keybindingsSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/keybindings.ts'), 'utf8');
+  const popoverSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/mark-popover.ts'), 'utf8');
   const shareClientSource = readFileSync(path.resolve(process.cwd(), 'src/bridge/share-client.ts'), 'utf8');
   const agentRoutesSource = readFileSync(path.resolve(process.cwd(), 'server/agent-routes.ts'), 'utf8');
 
@@ -37,6 +39,19 @@ function run(): void {
     editorSource.includes("addModeItem('No markup'")
       && editorSource.includes("addModeItem('Original'"),
     'Expected the share menu to expose the extra Word-style track-changes modes',
+  );
+  assert(
+    keybindingsSource.includes("'Mod-Alt-a': acceptActiveSuggestionCommand")
+      && keybindingsSource.includes("'Mod-Alt-r': rejectActiveSuggestionCommand")
+      && keybindingsSource.includes("'Mod-Alt-]': navigateNextSuggestionCommand")
+      && keybindingsSource.includes("'Mod-Alt-[': navigatePrevSuggestionCommand"),
+    'Expected dedicated keyboard shortcuts for accepting, rejecting, and navigating suggestions',
+  );
+  assert(
+    popoverSource.includes("view.dom.addEventListener('mousemove', this.handleEditorMouseMove);")
+      && popoverSource.includes("source?: 'direct' | 'hover'")
+      && popoverSource.includes("appendDetailRow('Original text', original);"),
+    'Expected suggestion popovers to open on hover and show the original replacement text',
   );
 
   const rejectSuggestionBlock = sliceBetween(editorSource, '  rejectSuggestion(id: string): boolean {', '\n  /**');

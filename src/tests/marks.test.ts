@@ -4496,8 +4496,9 @@ test('simple markup keeps live replace suggestions editable while indicating a h
       summary.markId === markId
       && summary.decorationRole === 'inline-mark'
       && summary.className.includes('mark-simple-replace-current')
+      && summary.style.includes('color:')
     ),
-    'Expected simple markup to keep the live replacement text visible and editable',
+    'Expected simple markup to keep the live replacement text visible, editable, and visually distinct',
   );
   assert(
     summaries.some((summary) =>

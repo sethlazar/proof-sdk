@@ -63,6 +63,8 @@ const VIEWPORT_SYNC_FRAMES = 6;
 const MOBILE_STRIP_PADDING_EXTRA = 20;
 const MOBILE_SELECTION_POLL_MS = 120;
 const MOBILE_SELECTION_POLL_WINDOW_MS = 1800;
+const SUGGESTION_HOVER_OPEN_DELAY_MS = 120;
+const SUGGESTION_HOVER_CLOSE_DELAY_MS = 180;
 
 type VisibleComment = {
   mark: Mark;
@@ -224,6 +226,10 @@ function isResolvableComment(mark: Mark): boolean {
   return !Boolean(data?.resolved);
 }
 
+function isSuggestionKind(kind: string | undefined): kind is 'insert' | 'delete' | 'replace' {
+  return kind === 'insert' || kind === 'delete' || kind === 'replace';
+}
+
 class MarkPopoverController {
   private view: EditorView;
   private popover: HTMLDivElement;
@@ -261,6 +267,11 @@ class MarkPopoverController {
   private mobileStripPaddingTarget: HTMLElement | null = null;
   private mobileStripPaddingOriginal: string | null = null;
   private mobileStripPaddingBase: number | null = null;
+  private suggestionHoverOpenTimer: number | null = null;
+  private suggestionHoverCloseTimer: number | null = null;
+  private hoverPendingMarkId: string | null = null;
+  private hoverPopoverActive: boolean = false;
+  private activeSuggestionOpenedFromHover: boolean = false;
 
   private getAdjacentSuggestionMarkId(currentMarkId: string, direction: 'next' | 'prev'): string | null {
     const suggestions = getPendingSuggestions(getMarks(this.view.state))
@@ -439,7 +450,81 @@ class MarkPopoverController {
     event.stopPropagation();
     const coords = { left: event.clientX, top: event.clientY };
     const pos = this.view.posAtCoords(coords)?.pos ?? null;
-    this.openForMark(markId, pos);
+    this.openForMark(markId, pos, { source: 'direct' });
+  };
+
+  private clearSuggestionHoverTimers(): void {
+    if (this.suggestionHoverOpenTimer !== null) {
+      window.clearTimeout(this.suggestionHoverOpenTimer);
+      this.suggestionHoverOpenTimer = null;
+    }
+    if (this.suggestionHoverCloseTimer !== null) {
+      window.clearTimeout(this.suggestionHoverCloseTimer);
+      this.suggestionHoverCloseTimer = null;
+    }
+    this.hoverPendingMarkId = null;
+  }
+
+  private scheduleSuggestionHoverClose(): void {
+    if (isMobileTouch()) return;
+    if (!this.activeSuggestionOpenedFromHover) return;
+    if (this.suggestionHoverCloseTimer !== null) {
+      window.clearTimeout(this.suggestionHoverCloseTimer);
+    }
+    this.suggestionHoverCloseTimer = window.setTimeout(() => {
+      this.suggestionHoverCloseTimer = null;
+      if (this.hoverPopoverActive) return;
+      if (this.activeSuggestionOpenedFromHover && this.mode === 'suggestion') {
+        this.close();
+      }
+    }, SUGGESTION_HOVER_CLOSE_DELAY_MS);
+  }
+
+  private handleEditorMouseMove = (event: MouseEvent) => {
+    if (isMobileTouch()) return;
+    if (event.buttons !== 0) return;
+    const target = event.target as HTMLElement | null;
+    const markEl = target?.closest('[data-mark-id]') as HTMLElement | null;
+    const markId = markEl?.dataset.markId ?? null;
+    const markKind = markEl?.dataset.markKind;
+    if (!markId || !isSuggestionKind(markKind)) {
+      this.scheduleSuggestionHoverClose();
+      return;
+    }
+
+    if (this.suggestionHoverCloseTimer !== null) {
+      window.clearTimeout(this.suggestionHoverCloseTimer);
+      this.suggestionHoverCloseTimer = null;
+    }
+
+    if (this.mode === 'suggestion' && this.activeMarkId === markId) {
+      return;
+    }
+
+    if (this.hoverPendingMarkId === markId) {
+      return;
+    }
+
+    if (this.suggestionHoverOpenTimer !== null) {
+      window.clearTimeout(this.suggestionHoverOpenTimer);
+    }
+
+    this.hoverPendingMarkId = markId;
+    const hoverClientX = event.clientX;
+    const hoverClientY = event.clientY;
+    this.suggestionHoverOpenTimer = window.setTimeout(() => {
+      this.suggestionHoverOpenTimer = null;
+      const pendingMarkId = this.hoverPendingMarkId;
+      this.hoverPendingMarkId = null;
+      if (!pendingMarkId) return;
+      const coords = { left: hoverClientX, top: hoverClientY };
+      const pos = this.view.posAtCoords(coords)?.pos ?? null;
+      this.openForMark(pendingMarkId, pos, { source: 'hover' });
+    }, SUGGESTION_HOVER_OPEN_DELAY_MS);
+  };
+
+  private handleEditorMouseLeave = () => {
+    this.scheduleSuggestionHoverClose();
   };
 
   private handleOutsidePointerDown = (event: PointerEvent) => {
@@ -472,6 +557,17 @@ class MarkPopoverController {
     this.popover.style.display = 'none';
     this.popover.addEventListener('pointerdown', event => {
       event.stopPropagation();
+    });
+    this.popover.addEventListener('mouseenter', () => {
+      this.hoverPopoverActive = true;
+      if (this.suggestionHoverCloseTimer !== null) {
+        window.clearTimeout(this.suggestionHoverCloseTimer);
+        this.suggestionHoverCloseTimer = null;
+      }
+    });
+    this.popover.addEventListener('mouseleave', () => {
+      this.hoverPopoverActive = false;
+      this.scheduleSuggestionHoverClose();
     });
 
     this.backdrop = document.createElement('div');
@@ -535,6 +631,8 @@ class MarkPopoverController {
 
     view.dom.addEventListener('pointerdown', this.handleEditorPointerDown);
     view.dom.addEventListener('click', this.handleEditorClick);
+    view.dom.addEventListener('mousemove', this.handleEditorMouseMove);
+    view.dom.addEventListener('mouseleave', this.handleEditorMouseLeave);
     view.dom.addEventListener('touchstart', this.handleEditorTouchStart, { passive: true });
     view.dom.addEventListener('touchend', this.handleEditorTouchEnd);
     window.addEventListener('scroll', this.handleScroll);
@@ -681,8 +779,11 @@ class MarkPopoverController {
     this.close();
     this.clearUndoToast();
     this.resetStripGestureVisual();
+    this.clearSuggestionHoverTimers();
     this.view.dom.removeEventListener('pointerdown', this.handleEditorPointerDown);
     this.view.dom.removeEventListener('click', this.handleEditorClick);
+    this.view.dom.removeEventListener('mousemove', this.handleEditorMouseMove);
+    this.view.dom.removeEventListener('mouseleave', this.handleEditorMouseLeave);
     this.view.dom.removeEventListener('touchstart', this.handleEditorTouchStart);
     this.view.dom.removeEventListener('touchend', this.handleEditorTouchEnd);
     window.removeEventListener('scroll', this.handleScroll);
@@ -781,7 +882,7 @@ class MarkPopoverController {
   openForMark(
     markId: string,
     pos?: number | null,
-    options?: { threadFocusMode?: ThreadFocusMode },
+    options?: { threadFocusMode?: ThreadFocusMode; source?: 'direct' | 'hover' },
   ): void {
     const marks = getMarks(this.view.state);
     const mark = marks.find(item => item.id === markId);
@@ -798,6 +899,11 @@ class MarkPopoverController {
     this.cachedActionRangeAt = 0;
     this.renderMode = shouldUseCommentUiV2() ? 'mobile-sheet' : 'legacy-popover';
     this.threadFocusMode = options?.threadFocusMode ?? 'reply-box';
+    this.activeSuggestionOpenedFromHover = mark.kind !== 'comment' && options?.source === 'hover';
+    if (this.suggestionHoverCloseTimer !== null) {
+      window.clearTimeout(this.suggestionHoverCloseTimer);
+      this.suggestionHoverCloseTimer = null;
+    }
 
     setActiveMark(this.view, markId);
     setComposeAnchorRange(this.view, null);
@@ -829,6 +935,8 @@ class MarkPopoverController {
     this.hasLiveSelection = false;
     this.cachedActionRange = null;
     this.cachedActionRangeAt = 0;
+    this.activeSuggestionOpenedFromHover = false;
+    this.hoverPopoverActive = false;
 
     this.hideOverlayChrome();
 
@@ -1232,20 +1340,32 @@ class MarkPopoverController {
 
     const body = document.createElement('div');
     body.className = 'mark-popover-body';
+    body.style.whiteSpace = 'normal';
 
-    let detail = '';
+    const appendDetailRow = (labelText: string, valueText: string): void => {
+      if (!valueText) return;
+      const label = document.createElement('div');
+      label.textContent = labelText;
+      label.style.cssText = 'font-size:11px;font-weight:600;letter-spacing:0.02em;text-transform:uppercase;opacity:0.62;margin-top:8px;';
+      const value = document.createElement('div');
+      value.textContent = valueText;
+      value.style.cssText = 'white-space:pre-wrap;word-break:break-word;line-height:1.4;';
+      body.appendChild(label);
+      body.appendChild(value);
+    };
+
     if (mark.kind === 'insert') {
       const data = mark.data as InsertData | undefined;
-      detail = data?.content ?? '';
+      appendDetailRow('Inserted text', data?.content ?? '');
     } else if (mark.kind === 'replace') {
       const data = mark.data as ReplaceData | undefined;
       const current = data?.content ?? '';
       const original = typeof data?.originalQuote === 'string' ? data.originalQuote : '';
-      detail = original ? `${original} -> ${current}` : current;
+      appendDetailRow('Original text', original);
+      appendDetailRow('Edited text', current);
     } else if (mark.kind === 'delete') {
-      detail = mark.quote ?? '';
+      appendDetailRow('Deleted text', mark.quote ?? '');
     }
-    body.textContent = detail;
 
     const actions = document.createElement('div');
     actions.className = 'mark-popover-actions';
@@ -1256,6 +1376,7 @@ class MarkPopoverController {
     const applyButton = document.createElement('button');
     applyButton.type = 'button';
     applyButton.textContent = 'Accept';
+    applyButton.title = 'Accept change (Cmd/Ctrl+Alt+A)';
     installTouchSafeButton(applyButton, () => {
       if (!canEdit) return;
       const proof = getProofEditorApi();
@@ -1274,6 +1395,7 @@ class MarkPopoverController {
     const rejectButton = document.createElement('button');
     rejectButton.type = 'button';
     rejectButton.textContent = 'Reject';
+    rejectButton.title = 'Reject change (Cmd/Ctrl+Alt+R)';
     installTouchSafeButton(rejectButton, () => {
       if (!canEdit) return;
       const proof = getProofEditorApi();
@@ -1297,6 +1419,7 @@ class MarkPopoverController {
     const previousButton = document.createElement('button');
     previousButton.type = 'button';
     previousButton.textContent = 'Previous';
+    previousButton.title = 'Previous change (Cmd/Ctrl+Alt+[';
     installTouchSafeButton(previousButton, () => {
       this.navigateToSuggestion(previousMarkId);
     });
@@ -1306,6 +1429,7 @@ class MarkPopoverController {
     const nextButton = document.createElement('button');
     nextButton.type = 'button';
     nextButton.textContent = 'Next';
+    nextButton.title = 'Next change (Cmd/Ctrl+Alt+])';
     installTouchSafeButton(nextButton, () => {
       this.navigateToSuggestion(nextMarkId);
     });

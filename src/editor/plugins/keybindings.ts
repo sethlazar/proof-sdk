@@ -12,8 +12,10 @@ import type { EditorView } from '@milkdown/kit/prose/view';
 import { keymap } from '@milkdown/kit/prose/keymap';
 import {
   comment as addComment,
+  accept as acceptSuggestionMark,
   getMarks,
   getActiveMarkId,
+  reject as rejectSuggestionMark,
   setActiveMark,
   resolve,
 } from './marks';
@@ -46,6 +48,11 @@ const keybindingsKey = new PluginKey('keybindings');
 
 // Callbacks for showing the agent input dialog
 let showAgentInputCallback: ((context: AgentInputContext, callbacks: AgentInputCallbacks) => void) | null = null;
+
+function getProofEditorApi(): Window['proof'] | null {
+  if (typeof window === 'undefined') return null;
+  return window.proof ?? null;
+}
 
 /**
  * Set the callback for showing the agent input dialog
@@ -234,6 +241,68 @@ function resolveActiveComment(
   return true;
 }
 
+function navigateNextSuggestionCommand(
+  _state: EditorState,
+  _dispatch: ((tr: unknown) => void) | undefined,
+  _view: EditorView | undefined
+): boolean {
+  const proof = getProofEditorApi();
+  if (!proof?.navigateToNextSuggestion) return false;
+  proof.navigateToNextSuggestion();
+  return true;
+}
+
+function navigatePrevSuggestionCommand(
+  _state: EditorState,
+  _dispatch: ((tr: unknown) => void) | undefined,
+  _view: EditorView | undefined
+): boolean {
+  const proof = getProofEditorApi();
+  if (!proof?.navigateToPrevSuggestion) return false;
+  proof.navigateToPrevSuggestion();
+  return true;
+}
+
+function acceptActiveSuggestionCommand(
+  state: EditorState,
+  _dispatch: ((tr: unknown) => void) | undefined,
+  view: EditorView | undefined
+): boolean {
+  if (!view) return false;
+  const activeId = getActiveMarkId(state);
+  if (!activeId) return false;
+  const activeMark = getMarks(state).find((mark) => mark.id === activeId);
+  if (!activeMark || (activeMark.kind !== 'insert' && activeMark.kind !== 'delete' && activeMark.kind !== 'replace')) {
+    return false;
+  }
+
+  const proof = getProofEditorApi();
+  if (proof?.markAccept) {
+    return proof.markAccept(activeId);
+  }
+  return acceptSuggestionMark(view, activeId);
+}
+
+function rejectActiveSuggestionCommand(
+  state: EditorState,
+  _dispatch: ((tr: unknown) => void) | undefined,
+  view: EditorView | undefined
+): boolean {
+  if (!view) return false;
+  const activeId = getActiveMarkId(state);
+  if (!activeId) return false;
+  const activeMark = getMarks(state).find((mark) => mark.id === activeId);
+  if (!activeMark || (activeMark.kind !== 'insert' && activeMark.kind !== 'delete' && activeMark.kind !== 'replace')) {
+    return false;
+  }
+
+  const proof = getProofEditorApi();
+  if (proof?.markReject) {
+    return proof.markReject(activeId);
+  }
+  return rejectSuggestionMark(view, activeId);
+}
+
 // ============================================================================
 // Quick Actions
 // ============================================================================
@@ -282,6 +351,10 @@ const agentKeymap = keymap({
   'Mod-Shift-k': addProofCommentCommand,
   'Mod-]': navigateNextComment,
   'Mod-[': navigatePrevComment,
+  'Mod-Alt-]': navigateNextSuggestionCommand,
+  'Mod-Alt-[': navigatePrevSuggestionCommand,
+  'Mod-Alt-a': acceptActiveSuggestionCommand,
+  'Mod-Alt-r': rejectActiveSuggestionCommand,
   'Mod-Shift-r': resolveActiveComment,
 });
 

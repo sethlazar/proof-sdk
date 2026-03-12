@@ -3113,7 +3113,7 @@ const STYLES = {
   compose_anchor: 'background-color: rgba(252, 211, 77, 0.22); border-bottom: 2px dashed #F59E0B;',
 
   insert: 'background-color: rgba(34, 197, 94, 0.25); border-bottom: 2px solid #22C55E;',
-  insert_simple: 'background-color: rgba(34, 197, 94, 0.14); border-bottom: 2px solid rgba(34, 197, 94, 0.72); border-radius: 2px;',
+  insert_simple: 'color: #15803d; font-weight: 500;',
   delete: 'background-color: rgba(239, 68, 68, 0.2); text-decoration: line-through; color: #666;',
   hidden_source: 'display:inline-block;width:0;max-width:0;overflow:hidden;white-space:nowrap;opacity:0;text-decoration:none;background:transparent;border:none;padding:0;margin:0;pointer-events:none;vertical-align:baseline;',
   change_indicator: 'display:inline-block;width:8px;height:1.05em;margin:0 1px;vertical-align:text-bottom;border-left:2px solid #ef4444;border-radius:999px;background:rgba(239, 68, 68, 0.08);cursor:pointer;',
@@ -3219,7 +3219,7 @@ function createDecorations(
         const data = mark.data as InsertData;
         if (data?.status === 'pending') {
           if (suggestionDisplayMode === 'simple') {
-            style = '';
+            style = STYLES.insert_simple;
             cssClass = 'mark-insert mark-simple mark-accepted-view';
             widgetPos = firstRangeFrom;
             widgetClassName = 'mark-simple-indicator mark-simple-insert-indicator';
@@ -3278,7 +3278,7 @@ function createDecorations(
             : null;
           if (originalQuote) {
             if (suggestionDisplayMode === 'simple') {
-              style = '';
+              style = STYLES.insert_simple;
               cssClass = 'mark-replace mark-insert mark-simple mark-simple-replace-current mark-accepted-view';
               widgetPos = firstRangeFrom;
               widgetClassName = 'mark-simple-indicator mark-simple-delete-indicator';
@@ -3311,7 +3311,7 @@ function createDecorations(
             hideSourceContent = true;
             widgetPos = firstRangeFrom;
             widgetClassName = 'mark-replace-insert mark-simple mark-accepted-view mark-simple-replace';
-            widgetStyle = '';
+            widgetStyle = STYLES.insert_simple;
             widgetText = replacementContent;
             widgetRole = 'replace-preview';
           } else if (suggestionDisplayMode === 'no-markup') {
