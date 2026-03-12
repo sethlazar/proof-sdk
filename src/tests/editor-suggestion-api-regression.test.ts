@@ -57,8 +57,15 @@ function run(): void {
   assert(
     popoverSource.includes("view.dom.addEventListener('mousemove', this.handleEditorMouseMove);")
       && popoverSource.includes("source?: 'direct' | 'hover'")
-      && popoverSource.includes("appendDetailRow('Original text', original);"),
-    'Expected suggestion popovers to open on hover and show the original replacement text',
+      && popoverSource.includes("appendDetailRow('Original text', original);")
+      && popoverSource.includes("matchesReviewShortcut(event, { key: 'a', code: 'KeyA' })")
+      && popoverSource.includes("matchesReviewShortcut(event, { key: 'r', code: 'KeyR' })")
+      && popoverSource.includes("matchesReviewShortcut(event, { key: ']', code: 'BracketRight' })")
+      && popoverSource.includes("matchesReviewShortcut(event, { key: '[', code: 'BracketLeft' })")
+      && popoverSource.includes('const stateActiveMarkId = getActiveMarkId(view.state);')
+      && popoverSource.includes("if (this.mode === 'suggestion') {")
+      && popoverSource.includes('if (stateActiveMarkId && stateActiveMarkId !== this.activeMarkId) {'),
+    'Expected suggestion popovers to open on hover, honor review shortcuts, and follow the active suggestion during review navigation',
   );
   assert(
     editorSource.includes('private scheduleShareMarksFlush(): void {')
@@ -86,9 +93,30 @@ function run(): void {
 
   const markAcceptBlock = sliceBetween(editorSource, '  markAccept(markId: string): boolean {', '\n  /**\n   * Reject a suggestion without changing the document\n   */');
   assert(
-    markAcceptBlock.includes('void shareClient.acceptSuggestion(markId, actor).then((result) => {')
+    markAcceptBlock.includes('success = acceptMark(view, markId, parser);')
+      && markAcceptBlock.includes('if (success && this.isShareMode) {')
+      && markAcceptBlock.includes('const metadata = getMarkMetadataWithQuotes(view.state);')
+      && markAcceptBlock.includes('this.lastReceivedServerMarks = { ...metadata };')
+      && markAcceptBlock.includes('this.initialMarksSynced = true;')
+      && markAcceptBlock.includes('void shareClient.acceptSuggestion(markId, actor).then((result) => {')
       && markAcceptBlock.includes("console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);"),
-    'Expected markAccept to persist accepted suggestions through the share mutation route',
+    'Expected markAccept to apply locally first in share mode and then persist through the share mutation route',
+  );
+
+  const navigateNextSuggestionBlock = sliceBetween(editorSource, '  navigateToNextSuggestion(): string | null {', '\n  /**\n   * Navigate to the previous pending suggestion\n   */');
+  assert(
+    navigateNextSuggestionBlock.includes('const activeId = getActiveMarkId(view.state);')
+      && navigateNextSuggestionBlock.includes('const activeIndex = activeId')
+      && navigateNextSuggestionBlock.includes('const baseIndex = activeIndex >= 0 ? activeIndex : this.currentSuggestionIndex;'),
+    'Expected next-suggestion navigation to derive its starting point from the active suggestion when available',
+  );
+
+  const navigatePrevSuggestionBlock = sliceBetween(editorSource, '  navigateToPrevSuggestion(): string | null {', '\n  resolveActiveComment(): boolean {');
+  assert(
+    navigatePrevSuggestionBlock.includes('const activeId = getActiveMarkId(view.state);')
+      && navigatePrevSuggestionBlock.includes('const activeIndex = activeId')
+      && navigatePrevSuggestionBlock.includes('const baseIndex = activeIndex >= 0 ? activeIndex : this.currentSuggestionIndex;'),
+    'Expected previous-suggestion navigation to derive its starting point from the active suggestion when available',
   );
 
   const markAcceptAllBlock = sliceBetween(editorSource, '  markAcceptAll(): number {', '\n  /**\n   * Reject all pending suggestions\n   */');

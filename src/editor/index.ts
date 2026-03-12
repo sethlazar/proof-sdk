@@ -8660,41 +8660,6 @@ class ProofEditorImpl implements ProofEditor {
       return false;
     }
 
-    if (this.isShareMode) {
-      let canAccept = false;
-      this.editor.action((ctx) => {
-        const view = ctx.get(editorViewCtx);
-        canAccept = getPendingSuggestions(getMarks(view.state)).some((mark) => mark.id === markId);
-      });
-      if (!canAccept) {
-        console.warn('[markAccept] Suggestion not pending in share mode:', markId);
-        return false;
-      }
-
-      const actor = getCurrentActor();
-      void shareClient.acceptSuggestion(markId, actor).then((result) => {
-        if (!result || 'error' in result || result.success !== true) return;
-        const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-          ? result.marks as Record<string, StoredMark>
-          : null;
-        if (!serverMarks) return;
-        this.lastReceivedServerMarks = { ...serverMarks };
-        this.initialMarksSynced = true;
-        if (this.editor) {
-          this.editor.action((innerCtx) => {
-            const innerView = innerCtx.get(editorViewCtx);
-            applyRemoteMarks(innerView, serverMarks, { hydrateAnchors: this.collabCanEdit });
-            const stats = getAuthorshipStats(innerView);
-            this.bridge.authorshipStatsUpdated(stats);
-          });
-        }
-        captureEvent('suggestion_accepted', { count: 1 });
-      }).catch((error) => {
-        console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);
-      });
-      return true;
-    }
-
     let success = false;
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
@@ -9250,8 +9215,13 @@ class ProofEditorImpl implements ProofEditor {
 
       // Sort by position
       const sortedSuggestions = [...suggestions].sort((a, b) => (a.range?.from ?? 0) - (b.range?.from ?? 0));
+      const activeId = getActiveMarkId(view.state);
+      const activeIndex = activeId
+        ? sortedSuggestions.findIndex((item) => item.id === activeId)
+        : -1;
+      const baseIndex = activeIndex >= 0 ? activeIndex : this.currentSuggestionIndex;
 
-      this.currentSuggestionIndex = (this.currentSuggestionIndex + 1) % sortedSuggestions.length;
+      this.currentSuggestionIndex = (baseIndex + 1) % sortedSuggestions.length;
       const mark = sortedSuggestions[this.currentSuggestionIndex];
       markId = mark.id;
     });
@@ -9284,10 +9254,15 @@ class ProofEditorImpl implements ProofEditor {
 
       // Sort by position
       const sortedSuggestions = [...suggestions].sort((a, b) => (a.range?.from ?? 0) - (b.range?.from ?? 0));
+      const activeId = getActiveMarkId(view.state);
+      const activeIndex = activeId
+        ? sortedSuggestions.findIndex((item) => item.id === activeId)
+        : -1;
+      const baseIndex = activeIndex >= 0 ? activeIndex : this.currentSuggestionIndex;
 
-      this.currentSuggestionIndex = this.currentSuggestionIndex <= 0
+      this.currentSuggestionIndex = baseIndex <= 0
         ? sortedSuggestions.length - 1
-        : this.currentSuggestionIndex - 1;
+        : baseIndex - 1;
       const mark = sortedSuggestions[this.currentSuggestionIndex];
       markId = mark.id;
     });

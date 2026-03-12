@@ -14,6 +14,7 @@ import {
   resolveMarks,
   deleteMark,
   setActiveMark,
+  getActiveMarkId,
   setComposeAnchorRange,
   suggestReplace,
   type MarkRange,
@@ -90,6 +91,31 @@ function formatTimestamp(iso: string | undefined): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   return date.toLocaleString();
+}
+
+function isMacPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const platform = navigator.platform || '';
+  const userAgent = navigator.userAgent || '';
+  return /Mac|iPhone|iPad|iPod/i.test(platform) || /Mac/i.test(userAgent);
+}
+
+function hasReviewShortcutModifiers(event: KeyboardEvent): boolean {
+  const primaryModifierPressed = isMacPlatform()
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey;
+  return primaryModifierPressed && event.altKey && !event.shiftKey;
+}
+
+function matchesReviewShortcut(
+  event: KeyboardEvent,
+  options: { key?: string; code?: string },
+): boolean {
+  if (!hasReviewShortcutModifiers(event)) return false;
+  const normalizedKey = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+  if (options.key && normalizedKey === options.key.toLowerCase()) return true;
+  if (options.code && event.code === options.code) return true;
+  return false;
 }
 
 function resolveAnchorRange(view: EditorView, mark: Mark, pos?: number | null): MarkRange | null {
@@ -520,6 +546,13 @@ class MarkPopoverController {
       const coords = { left: hoverClientX, top: hoverClientY };
       const pos = this.view.posAtCoords(coords)?.pos ?? null;
       this.openForMark(pendingMarkId, pos, { source: 'hover' });
+      if (this.mode === 'suggestion' && this.activeMarkId === pendingMarkId && this.popover.style.display === 'none') {
+        const mark = getMarks(this.view.state).find(item => item.id === pendingMarkId);
+        if (mark) {
+          this.renderSuggestion(mark);
+          this.open();
+        }
+      }
     }, SUGGESTION_HOVER_OPEN_DELAY_MS);
   };
 
@@ -545,6 +578,66 @@ class MarkPopoverController {
   private handleKeydown = (event: KeyboardEvent) => {
     if (event.key === 'Escape') {
       this.close();
+      return;
+    }
+
+    if (event.defaultPrevented || this.mode !== 'suggestion' || !this.activeMarkId) return;
+
+    const mark = getMarks(this.view.state).find(item => item.id === this.activeMarkId);
+    if (!mark || (mark.kind !== 'insert' && mark.kind !== 'delete' && mark.kind !== 'replace')) {
+      return;
+    }
+
+    const nextMarkId = this.getAdjacentSuggestionMarkId(mark.id, 'next');
+    const previousMarkId = this.getAdjacentSuggestionMarkId(mark.id, 'prev');
+
+    if (matchesReviewShortcut(event, { key: 'a', code: 'KeyA' })) {
+      event.preventDefault();
+      event.stopPropagation();
+      const proof = getProofEditorApi();
+      if (proof?.markAccept) {
+        proof.markAccept(mark.id);
+      } else {
+        acceptSuggestion(this.view, mark.id);
+      }
+      if (nextMarkId) {
+        this.navigateToSuggestion(nextMarkId);
+      } else {
+        this.close();
+      }
+      return;
+    }
+
+    if (matchesReviewShortcut(event, { key: 'r', code: 'KeyR' })) {
+      event.preventDefault();
+      event.stopPropagation();
+      const proof = getProofEditorApi();
+      if (proof?.markReject) {
+        proof.markReject(mark.id);
+      } else {
+        rejectSuggestion(this.view, mark.id);
+      }
+      if (nextMarkId) {
+        this.navigateToSuggestion(nextMarkId);
+      } else {
+        this.close();
+      }
+      return;
+    }
+
+    if (matchesReviewShortcut(event, { key: ']', code: 'BracketRight' })) {
+      if (!nextMarkId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.navigateToSuggestion(nextMarkId);
+      return;
+    }
+
+    if (matchesReviewShortcut(event, { key: '[', code: 'BracketLeft' })) {
+      if (!previousMarkId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.navigateToSuggestion(previousMarkId);
     }
   };
 
@@ -830,6 +923,30 @@ class MarkPopoverController {
       } else if (this.activeMarkId) {
         this.renderMode = nextRenderMode;
         this.openForMark(this.activeMarkId, undefined, { threadFocusMode: this.threadFocusMode });
+      }
+    }
+
+    if (this.mode === 'suggestion') {
+      const stateActiveMarkId = getActiveMarkId(view.state);
+      if (stateActiveMarkId && stateActiveMarkId !== this.activeMarkId) {
+        this.openForMark(stateActiveMarkId, undefined, {
+          source: this.activeSuggestionOpenedFromHover ? 'hover' : 'direct',
+        });
+        this.scheduleMobileStripRender();
+        return;
+      }
+
+      if (this.activeMarkId) {
+        const marks = getMarks(view.state);
+        const mark = marks.find(item => item.id === this.activeMarkId);
+        if (!mark) {
+          this.close();
+          return;
+        }
+        this.renderSuggestion(mark);
+        if (this.popover.style.display === 'none') {
+          this.open();
+        }
       }
     }
 
