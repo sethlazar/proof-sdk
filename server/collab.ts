@@ -73,12 +73,14 @@ export interface CollabSessionInfo {
 export interface CollabRuntime {
   enabled: boolean;
   wsUrlBase: string;
+  embedded?: boolean;
   reason?: string;
 }
 
 let runtime: CollabRuntime = {
   enabled: false,
   wsUrlBase: '',
+  embedded: false,
   reason: 'Collab runtime not initialized',
 };
 
@@ -4584,6 +4586,7 @@ export async function startCollabRuntimeEmbedded(mainHttpPort: number): Promise<
     runtime = {
       enabled: true,
       wsUrlBase: wsUrlBase.replace(/\/+$/, ''),
+      embedded: true,
     };
     console.log(`[collab] embedded runtime enabled wsUrlBase=${runtime.wsUrlBase}`);
     scheduleStartupProjectionReconcile();
@@ -4594,6 +4597,7 @@ export async function startCollabRuntimeEmbedded(mainHttpPort: number): Promise<
     runtime = {
       enabled: false,
       wsUrlBase: '',
+      embedded: false,
       reason: error instanceof Error ? error.message : String(error),
     };
     console.error('[collab] failed to start embedded runtime:', runtime.reason);
@@ -4608,6 +4612,7 @@ export async function startCollabRuntimeAttached(mainHttpServer: HttpServer, mai
     runtime = {
       enabled: false,
       wsUrlBase: '',
+      embedded: false,
       reason: 'Disabled by PROOF_COLLAB_V2 flag',
     };
     return runtime;
@@ -4619,6 +4624,7 @@ export async function startCollabRuntimeAttached(mainHttpServer: HttpServer, mai
     runtime = {
       enabled: false,
       wsUrlBase: '',
+      embedded: false,
       reason: 'PROOF_COLLAB_SIGNING_SECRET is required for non-local collab runtime',
     };
     return runtime;
@@ -4796,6 +4802,7 @@ export async function startCollabRuntimeAttached(mainHttpServer: HttpServer, mai
     runtime = {
       enabled: true,
       wsUrlBase: wsUrlBase.replace(/\/$/, ''),
+      embedded: false,
     };
     console.log(`[collab] runtime attached on ${path} wsUrlBase=${runtime.wsUrlBase}`);
     void reconcileStaleProjectionsOnStartup();
@@ -4806,6 +4813,7 @@ export async function startCollabRuntimeAttached(mainHttpServer: HttpServer, mai
     runtime = {
       enabled: false,
       wsUrlBase: '',
+      embedded: false,
       reason: error instanceof Error ? error.message : String(error),
     };
     console.error('[collab] failed to start attached runtime:', runtime.reason);

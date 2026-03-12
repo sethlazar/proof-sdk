@@ -303,6 +303,17 @@ function rejectActiveSuggestionCommand(
   return rejectSuggestionMark(view, activeId);
 }
 
+function toggleSuggestionsCommand(
+  _state: EditorState,
+  _dispatch: ((tr: unknown) => void) | undefined,
+  _view: EditorView | undefined
+): boolean {
+  const proof = getProofEditorApi();
+  if (!proof?.toggleSuggestions) return false;
+  proof.toggleSuggestions();
+  return true;
+}
+
 // ============================================================================
 // Quick Actions
 // ============================================================================
@@ -355,6 +366,7 @@ const agentKeymap = keymap({
   'Mod-Alt-[': navigatePrevSuggestionCommand,
   'Mod-Alt-a': acceptActiveSuggestionCommand,
   'Mod-Alt-r': rejectActiveSuggestionCommand,
+  'Mod-Shift-e': toggleSuggestionsCommand,
   'Mod-Shift-r': resolveActiveComment,
 });
 

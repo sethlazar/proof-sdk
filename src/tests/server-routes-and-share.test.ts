@@ -366,6 +366,14 @@ async function runServerSourceTests(): Promise<void> {
     );
   });
 
+  await test('D1: server source serves built share-page assets from dist', async () => {
+    assertIncludes(
+      serverSource,
+      "app.use(express.static(path.join(__dirname, '..', 'dist'), { index: false }));",
+      'server source should serve built dist assets so /d/:slug can load the editor bundle',
+    );
+  });
+
   await test('D1: server source mounts discovery metadata routes', async () => {
     assertIncludes(
       serverSource,
@@ -1392,6 +1400,24 @@ async function runRoutePayloadValidationTests(): Promise<void> {
         assert(payload?.session?.role === 'editor', `Expected editor role, got ${String(payload?.session?.role)}`);
         assert(payload?.capabilities?.canEdit === true, 'Expected editor collab session to include canEdit=true');
         assert(payload?.capabilities?.canComment === true, 'Expected editor collab session to include canComment=true');
+      } else {
+        assert(payload?.collabAvailable === false, 'Expected collabAvailable=false when collab-session lacks session');
+      }
+    });
+
+    await test('D2: collab-session keeps localhost embedded ws URLs on the app port', async () => {
+      const response = await get(baseUrl, `/api/documents/${slug}/collab-session`, {
+        'x-share-token': accessToken,
+      });
+      assert(response.status === 200, `Expected status 200, got ${response.status}`);
+      const payload = await response.json();
+      if (payload?.session) {
+        const collabWsUrl = String(payload?.session?.collabWsUrl ?? '');
+        const expectedWsBase = baseUrl.replace(/^http/, 'ws');
+        assert(
+          collabWsUrl.startsWith(`${expectedWsBase}/ws`),
+          `Expected embedded collab session to stay on ${expectedWsBase}/ws, got ${collabWsUrl}`,
+        );
       } else {
         assert(payload?.collabAvailable === false, 'Expected collabAvailable=false when collab-session lacks session');
       }

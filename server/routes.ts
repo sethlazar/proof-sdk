@@ -583,7 +583,11 @@ function resolveRequestScopedCollabWsBase(req: Request): string {
   }
 
   const embeddedRaw = (process.env.COLLAB_EMBEDDED_WS || '').trim().toLowerCase();
-  const embedded = embeddedRaw === '1' || embeddedRaw === 'true' || embeddedRaw === 'yes' || embeddedRaw === 'on';
+  const embedded = collabRuntime.embedded === true
+    || embeddedRaw === '1'
+    || embeddedRaw === 'true'
+    || embeddedRaw === 'yes'
+    || embeddedRaw === 'on';
 
   const publicBase = getPublicBaseUrl(req);
   if (!publicBase) return runtimeBase;

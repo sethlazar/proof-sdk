@@ -44,8 +44,15 @@ function run(): void {
     keybindingsSource.includes("'Mod-Alt-a': acceptActiveSuggestionCommand")
       && keybindingsSource.includes("'Mod-Alt-r': rejectActiveSuggestionCommand")
       && keybindingsSource.includes("'Mod-Alt-]': navigateNextSuggestionCommand")
-      && keybindingsSource.includes("'Mod-Alt-[': navigatePrevSuggestionCommand"),
-    'Expected dedicated keyboard shortcuts for accepting, rejecting, and navigating suggestions',
+      && keybindingsSource.includes("'Mod-Alt-[': navigatePrevSuggestionCommand")
+      && keybindingsSource.includes("'Mod-Shift-e': toggleSuggestionsCommand"),
+    'Expected dedicated keyboard shortcuts for accepting, rejecting, navigating, and toggling suggestions',
+  );
+  assert(
+    editorSource.includes('private createTrackChangesModeToggle(): HTMLElement {')
+      && editorSource.includes("makeSegment('Edit'")
+      && editorSource.includes("makeSegment('Track Changes'"),
+    'Expected the share banner to expose a visible Edit / Track Changes toggle',
   );
   assert(
     popoverSource.includes("view.dom.addEventListener('mousemove', this.handleEditorMouseMove);")

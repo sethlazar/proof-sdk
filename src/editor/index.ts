@@ -1123,6 +1123,8 @@ class ProofEditorImpl implements ProofEditor {
   private shareWelcomeToast: HTMLElement | null = null;
   private shareDocTitle: string = 'Untitled';
   private shareBannerTitleEl: HTMLElement | null = null;
+  private shareBannerEditModeButtonEl: HTMLButtonElement | null = null;
+  private shareBannerTrackChangesButtonEl: HTMLButtonElement | null = null;
   private shareBannerAvatarsEl: HTMLElement | null = null;
   private shareBannerAgentSlotEl: HTMLElement | null = null;
   private shareBannerSyncDotEl: HTMLElement | null = null;
@@ -3034,6 +3036,14 @@ class ProofEditorImpl implements ProofEditor {
         background:rgba(0,0,0,0.10);
         flex-shrink:0;
       }
+      #share-banner .share-pill-track-toggle {
+        display:inline-flex;
+        align-items:center;
+        flex-shrink:0;
+      }
+      #share-banner .share-pill-track-btn {
+        white-space:nowrap;
+      }
       #share-banner .proof-avatar-tooltip {
         position:absolute;
         top:calc(100% + 6px);
@@ -3095,6 +3105,11 @@ class ProofEditorImpl implements ProofEditor {
           padding: 0 2px !important;
         }
         #share-banner .share-pill-agent-trigger .agent-btn-label {
+          font-size: 11px !important;
+        }
+        #share-banner .share-pill-track-btn {
+          min-height: 36px !important;
+          padding: 0 10px !important;
           font-size: 11px !important;
         }
         #share-banner .share-pill-status-inline .status-label {
@@ -3381,11 +3396,95 @@ class ProofEditorImpl implements ProofEditor {
     this.shareBannerSyncLabelEl.style.display = this.shouldShowStatusText(statusText) ? '' : 'none';
   }
 
+  private canToggleTrackChanges(): boolean {
+    return !this.isReadOnly
+      && this.reviewLockCount === 0
+      && (!this.isShareMode || this.shareAllowLocalEdits);
+  }
+
+  private updateShareBannerTrackChangesDisplay(): void {
+    const editButton = this.shareBannerEditModeButtonEl;
+    const trackChangesButton = this.shareBannerTrackChangesButtonEl;
+    if (!editButton || !trackChangesButton) return;
+
+    const enabled = this.isSuggestionsEnabled();
+    const canToggle = this.canToggleTrackChanges();
+    const container = editButton.parentElement as HTMLElement | null;
+    if (container) {
+      container.style.display = canToggle ? 'inline-flex' : 'none';
+    }
+
+    const applyState = (button: HTMLButtonElement, active: boolean, title: string) => {
+      button.disabled = !canToggle || active;
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+      button.title = canToggle ? title : 'Track changes is currently unavailable';
+      button.style.background = active ? '#111827' : 'transparent';
+      button.style.color = active ? '#fff' : '#4b5563';
+      button.style.boxShadow = active ? '0 1px 2px rgba(17,24,39,0.16)' : 'none';
+      button.style.opacity = canToggle ? '1' : '0.5';
+      button.style.cursor = !canToggle || active ? 'default' : 'pointer';
+    };
+
+    applyState(editButton, !enabled, 'Make direct edits (Cmd/Ctrl+Shift+E)');
+    applyState(trackChangesButton, enabled, 'Record edits as tracked changes (Cmd/Ctrl+Shift+E)');
+  }
+
+  private createTrackChangesModeToggle(): HTMLElement {
+    const container = document.createElement('div');
+    container.className = 'share-pill-track-toggle';
+    container.style.cssText = `
+      display:inline-flex;align-items:center;gap:2px;padding:2px;
+      background:rgba(17,24,39,0.06);border:1px solid rgba(17,24,39,0.08);
+      border-radius:999px;flex-shrink:0;
+    `;
+
+    const makeSegment = (label: string, onSelect: () => void): HTMLButtonElement => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'share-pill-track-btn';
+      button.textContent = label;
+      button.style.cssText = `
+        min-height:40px;border:none;border-radius:999px;padding:0 12px;background:transparent;
+        color:#4b5563;font-size:12px;font-weight:600;font-family:inherit;white-space:nowrap;
+        transition:background 0.15s,color 0.15s,box-shadow 0.15s;cursor:pointer;
+      `;
+      button.onmouseenter = () => {
+        if (button.disabled || button.getAttribute('aria-pressed') === 'true') return;
+        button.style.background = 'rgba(17,24,39,0.08)';
+      };
+      button.onmouseleave = () => {
+        if (button.getAttribute('aria-pressed') === 'true') return;
+        button.style.background = 'transparent';
+      };
+      button.onclick = () => {
+        if (button.disabled) return;
+        this.triggerHaptic('selection');
+        onSelect();
+      };
+      return button;
+    };
+
+    const editButton = makeSegment('Edit', () => {
+      this.disableSuggestions();
+    });
+    const trackChangesButton = makeSegment('Track Changes', () => {
+      this.enableSuggestions();
+    });
+
+    this.shareBannerEditModeButtonEl = editButton;
+    this.shareBannerTrackChangesButtonEl = trackChangesButton;
+    container.append(editButton, trackChangesButton);
+    this.updateShareBannerTrackChangesDisplay();
+    return container;
+  }
+
   private renderShareBannerContent(banner: HTMLElement, otherViewerCount: number): void {
     this.ensureShareBannerResponsiveCSS();
     this.shareOtherViewerCount = otherViewerCount;
     if (
       this.shareBannerTitleEl
+      && this.shareBannerEditModeButtonEl
+      && this.shareBannerTrackChangesButtonEl
       && this.shareBannerAvatarsEl
       && this.shareBannerAgentSlotEl
       && this.shareBannerSyncDotEl
@@ -3396,6 +3495,7 @@ class ProofEditorImpl implements ProofEditor {
       this.updateShareBannerPresenceDisplay();
       this.updateShareBannerAgentControlDisplay();
       this.updateShareBannerSyncDisplay();
+      this.updateShareBannerTrackChangesDisplay();
       this.scheduleBannerLayoutUpdate();
       return;
     }
@@ -3422,6 +3522,8 @@ class ProofEditorImpl implements ProofEditor {
     this.updateShareBannerTitleDisplay();
     this.setupTitleEditing(title);
 
+    const trackChangesToggle = this.createTrackChangesModeToggle();
+
     const avatars = document.createElement('span');
     this.shareBannerAvatarsEl = avatars;
     this.updateShareBannerPresenceDisplay();
@@ -3447,7 +3549,7 @@ class ProofEditorImpl implements ProofEditor {
 
     const shareBtn = this.createShareMenuButton();
 
-    banner.replaceChildren(wordmark, separator, title, syncStatusSep, syncStatusInline, avatars, agentSlot, shareBtn);
+    banner.replaceChildren(wordmark, separator, title, trackChangesToggle, syncStatusSep, syncStatusInline, avatars, agentSlot, shareBtn);
     this.scheduleBannerLayoutUpdate();
   }
 
@@ -4695,6 +4797,8 @@ class ProofEditorImpl implements ProofEditor {
     this.closeAgentMenu();
     this.shareBannerTitleEditing = false;
     this.shareBannerTitleEl = null;
+    this.shareBannerEditModeButtonEl = null;
+    this.shareBannerTrackChangesButtonEl = null;
     this.shareBannerAvatarsEl = null;
     this.shareBannerAgentSlotEl = null;
     this.shareBannerSyncDotEl = null;
@@ -4921,6 +5025,7 @@ class ProofEditorImpl implements ProofEditor {
 
     if (viewOverride) {
       applyEditableState(viewOverride);
+      this.updateShareBannerTrackChangesDisplay();
       return;
     }
 
@@ -4929,6 +5034,7 @@ class ProofEditorImpl implements ProofEditor {
       const view = ctx.get(editorViewCtx);
       applyEditableState(view);
     });
+    this.updateShareBannerTrackChangesDisplay();
   }
 
   private ensureReviewLockBanner(): void {
@@ -6484,6 +6590,7 @@ class ProofEditorImpl implements ProofEditor {
       enableSuggestions(view);
       console.log('[enableSuggestions] Suggestions enabled');
     });
+    this.updateShareBannerTrackChangesDisplay();
   }
 
   /**
@@ -6500,6 +6607,7 @@ class ProofEditorImpl implements ProofEditor {
       disableSuggestions(view);
       console.log('[disableSuggestions] Suggestions disabled');
     });
+    this.updateShareBannerTrackChangesDisplay();
   }
 
   /**
@@ -6517,6 +6625,7 @@ class ProofEditorImpl implements ProofEditor {
       enabled = toggleSuggestions(view);
       console.log('[toggleSuggestions] Suggestions:', enabled ? 'enabled' : 'disabled');
     });
+    this.updateShareBannerTrackChangesDisplay();
     return enabled;
   }
 
