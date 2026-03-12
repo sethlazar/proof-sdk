@@ -162,6 +162,7 @@ export interface DeleteData extends OrchestratedMarkMeta {
 
 export interface ReplaceData extends OrchestratedMarkMeta {
   content: string;  // The replacement text
+  originalQuote?: string;
   status: SuggestionStatus;
 }
 
@@ -224,6 +225,7 @@ export interface StoredMark {
   replies?: CommentReply[];
   resolved?: boolean;
   content?: string;
+  originalQuote?: string;
   status?: SuggestionStatus;
   note?: string;
   runId?: string;
@@ -282,6 +284,7 @@ function mergeStoredMarkFallbacks(existing: StoredMark, incoming: StoredMark): S
   if (!merged.startRel && existing.startRel) merged.startRel = existing.startRel;
   if (!merged.endRel && existing.endRel) merged.endRel = existing.endRel;
   if (!merged.quote && existing.quote) merged.quote = existing.quote;
+  if (!merged.originalQuote && existing.originalQuote) merged.originalQuote = existing.originalQuote;
   return merged;
 }
 
@@ -491,7 +494,7 @@ export function createReplaceSuggestion(
   by: string,
   content: string,
   range?: MarkRange,
-  meta?: OrchestratedMarkMeta
+  meta?: OrchestratedMarkMeta & { originalQuote?: string }
 ): Mark {
   return {
     id: generateMarkId(),
@@ -503,6 +506,9 @@ export function createReplaceSuggestion(
     data: {
       ...(meta ?? {}),
       content,
+      ...(typeof meta?.originalQuote === 'string' && meta.originalQuote.trim().length > 0
+        ? { originalQuote: meta.originalQuote }
+        : {}),
       status: 'pending'
     } as ReplaceData
   };

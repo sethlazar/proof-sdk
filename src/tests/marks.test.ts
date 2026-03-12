@@ -76,6 +76,7 @@ import {
   __resetMarkAnchorHydrationFailures,
   __debugDescribeDecorations,
 } from '../editor/plugins/marks.js';
+import { wrapTransactionForSuggestions } from '../editor/plugins/suggestions.js';
 import { getTextForRange, resolveQuoteRange } from '../editor/utils/text-range.js';
 import { extractEmbeddedProvenance } from '../formats/provenance-sidecar.js';
 import { proofMarkHandler, remarkProofMarks } from '../formats/remark-proof-marks.js';
@@ -4231,6 +4232,287 @@ test('simple markup replaces source text with preview widget for pending replace
       && summary.className.includes('mark-simple-replace')
     ),
     'Expected simple markup to render replacement preview text inline',
+  );
+});
+
+test('wrapTransactionForSuggestions keeps editing inside a live replace suggestion on the same mark', () => {
+  const markId = 'replace-live-edit';
+  const replaceMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'replace', by: 'human:user' });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: marksSchema.node('doc', null, [
+      marksSchema.node('paragraph', null, [
+        marksSchema.text('Before '),
+        marksSchema.text('planet', [replaceMark]),
+        marksSchema.text(' after'),
+      ]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'replace',
+        by: 'human:user',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        content: 'planet',
+        originalQuote: 'world',
+        quote: 'planet',
+        status: 'pending',
+      },
+    },
+  }));
+
+  const replaceSuggestion = getMarks(state).find((mark) => mark.id === markId);
+  assert(replaceSuggestion?.range, 'Expected live replace suggestion to resolve');
+
+  const wrapped = wrapTransactionForSuggestions(
+    state.tr.insertText('ary', replaceSuggestion!.range!.to),
+    state,
+    true,
+  );
+  state = state.apply(wrapped);
+
+  const docText = state.doc.textBetween(0, state.doc.content.size, '\n', '\n');
+  assertEqual(docText, 'Before planetary after', 'Expected typed text to stay inside the existing replace suggestion');
+
+  const updatedMark = getMarks(state).find((mark) => mark.id === markId);
+  assert(updatedMark?.range, 'Expected live replace suggestion to remain anchored after typing');
+  assertEqual(getTextForRange(state.doc, updatedMark!.range!), 'planetary', 'Expected replace anchor to expand with the new text');
+
+  const metadata = getMarkMetadataWithQuotes(state);
+  assertEqual(Object.keys(metadata).length, 1, 'Expected typing inside a pending replace suggestion not to create a second suggestion');
+  assertEqual(metadata[markId]?.content, 'planetary', 'Expected live replace metadata content to track the edited text');
+  assertEqual(metadata[markId]?.quote, 'planetary', 'Expected live replace quote to track the edited text');
+  assertEqual(metadata[markId]?.originalQuote, 'world', 'Expected reject metadata to retain the original text');
+});
+
+test('reject restores the original text for live replace suggestions', () => {
+  const markId = 'replace-live-reject';
+  const replaceMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'replace', by: 'human:seth' });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: marksSchema.node('doc', null, [
+      marksSchema.node('paragraph', null, [
+        marksSchema.text('Before '),
+        marksSchema.text('planet', [replaceMark]),
+        marksSchema.text(' after'),
+      ]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'replace',
+        by: 'human:seth',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        content: 'planet',
+        originalQuote: 'world',
+        quote: 'planet',
+        status: 'pending',
+      },
+    },
+  }));
+
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const rejected = rejectMark(view, markId);
+  assert(rejected, 'Reject should succeed for a live replace suggestion');
+  assertEqual(
+    state.doc.textBetween(0, state.doc.content.size, '\n', '\n'),
+    'Before world after',
+    'Expected reject to restore the original text instead of just clearing the mark',
+  );
+  assert(!getMarkMetadata(state)[markId], 'Expected reject to remove live replace metadata');
+});
+
+test('accept keeps the live replacement text and clears the suggestion', () => {
+  const markId = 'replace-live-accept';
+  const replaceMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'replace', by: 'human:user' });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: marksSchema.node('doc', null, [
+      marksSchema.node('paragraph', null, [
+        marksSchema.text('Before '),
+        marksSchema.text('planet', [replaceMark]),
+        marksSchema.text(' after'),
+      ]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'replace',
+        by: 'human:user',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        content: 'planet',
+        originalQuote: 'world',
+        quote: 'planet',
+        status: 'pending',
+      },
+    },
+  }));
+
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const accepted = acceptMark(view, markId);
+  assert(accepted, 'Accept should succeed for a live replace suggestion');
+  assertEqual(
+    state.doc.textBetween(0, state.doc.content.size, '\n', '\n'),
+    'Before planet after',
+    'Expected accept to keep the live replacement text in place',
+  );
+  assert(!getMarkMetadata(state)[markId], 'Expected accept to remove live replace metadata');
+});
+
+test('simple markup keeps live replace suggestions editable while indicating a hidden change', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+    },
+    marks: {
+      proofSuggestion: {
+        attrs: {
+          id: { default: null },
+          kind: { default: 'replace' },
+          by: { default: 'unknown' },
+          status: { default: 'pending' },
+          createdAt: { default: null },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+    },
+  });
+
+  const markId = 'replace-live-simple-markup';
+  const replaceMark = schema.marks.proofSuggestion.create({ id: markId, kind: 'replace', by: 'human:seth' });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema,
+    doc: schema.node('doc', null, [
+      schema.node('paragraph', null, [schema.text('Before '), schema.text('planet', [replaceMark]), schema.text(' after')]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'replace',
+        by: 'human:seth',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        content: 'planet',
+        originalQuote: 'world',
+        quote: 'planet',
+        status: 'pending',
+      },
+    },
+  }));
+
+  const summaries = __debugDescribeDecorations(state, getMarks(state), null, null, 'simple');
+  assert(
+    summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'inline-mark'
+      && summary.className.includes('mark-simple-replace-current')
+    ),
+    'Expected simple markup to keep the live replacement text visible and editable',
+  );
+  assert(
+    summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'hidden-change-indicator'
+      && summary.className.includes('mark-simple-delete-indicator')
+    ),
+    'Expected simple markup to indicate that the original text is still pending review',
+  );
+  assert(
+    !summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'hidden-source'
+    ),
+    'Expected simple markup not to hide the live replacement text for current-text anchored suggestions',
   );
 });
 

@@ -1006,9 +1006,13 @@ function buildSuggestionData(
   }
 
   if (kind === 'replace') {
+    const originalQuote = typeof meta?.originalQuote === 'string' && meta.originalQuote.trim().length > 0
+      ? meta.originalQuote
+      : undefined;
     return {
       ...orchestrationMeta,
-      content: meta?.content ?? quote,
+      content: originalQuote ? quote : (meta?.content ?? quote),
+      ...(originalQuote ? { originalQuote } : {}),
       status,
     } as ReplaceData;
   }
@@ -1450,7 +1454,12 @@ function buildMetadataFromMark(mark: Mark): StoredMark {
     applyOrchestrationMeta(meta, data);
   } else if (mark.kind === 'replace') {
     const data = mark.data as ReplaceData | undefined;
-    meta.content = data?.content ?? '';
+    if (typeof data?.originalQuote === 'string' && data.originalQuote.trim().length > 0) {
+      meta.originalQuote = data.originalQuote;
+      meta.content = mark.quote;
+    } else {
+      meta.content = data?.content ?? '';
+    }
     meta.status = data?.status ?? 'pending';
     applyOrchestrationMeta(meta, data);
   } else if (mark.kind === 'flagged') {
@@ -1590,6 +1599,9 @@ function mergeStoredMarkWithFallback(
     if ((!incomingContent || incomingContent.length === 0) && existingContent && existingContent.length > 0) {
       merged.content = existingContent;
     }
+  }
+  if (!incoming.originalQuote && existing.originalQuote) {
+    merged.originalQuote = existing.originalQuote;
   }
 
   if (!incoming.createdAt && existing.createdAt) merged.createdAt = existing.createdAt;
@@ -2830,10 +2842,20 @@ export function reject(view: EditorView, markId: string): boolean {
       break;
     }
     case 'replace': {
-      const markType = getMarkTypeForKind(view.state, 'replace');
-      if (!markType) return false;
-      for (const range of ranges) {
-        tr = tr.removeMark(range.from, range.to, markType);
+      const data = mark.data as ReplaceData | undefined;
+      const originalQuote = typeof data?.originalQuote === 'string' && data.originalQuote.trim().length > 0
+        ? data.originalQuote
+        : null;
+      if (originalQuote) {
+        if (ranges.length !== 1) return false;
+        const range = ranges[0];
+        tr = tr.insertText(originalQuote, range.from, range.to);
+      } else {
+        const markType = getMarkTypeForKind(view.state, 'replace');
+        if (!markType) return false;
+        for (const range of ranges) {
+          tr = tr.removeMark(range.from, range.to, markType);
+        }
       }
       break;
     }
@@ -2922,12 +2944,20 @@ export function rejectAll(view: EditorView): number {
         break;
       }
       case 'replace': {
-        const markType = getMarkTypeForKind(view.state, 'replace');
+        const data = mark.data as ReplaceData | undefined;
+        const originalQuote = typeof data?.originalQuote === 'string' && data.originalQuote.trim().length > 0
+          ? data.originalQuote
+          : null;
         for (const range of ranges) {
           const from = tr.mapping.map(range.from);
           const to = tr.mapping.map(range.to);
-          if (markType) {
-            tr = tr.removeMark(from, to, markType);
+          if (originalQuote) {
+            tr = tr.insertText(originalQuote, from, to);
+          } else {
+            const markType = getMarkTypeForKind(view.state, 'replace');
+            if (markType) {
+              tr = tr.removeMark(from, to, markType);
+            }
           }
         }
         break;
@@ -3129,7 +3159,7 @@ function createDecorations(
     let widgetClassName = '';
     let widgetStyle = '';
     let widgetText = '';
-    let widgetRole: 'replace-preview' | 'hidden-change-indicator' | null = null;
+    let widgetRole: 'replace-preview' | 'replace-original' | 'hidden-change-indicator' | null = null;
 
     switch (mark.kind) {
       case 'authored':
@@ -3185,7 +3215,27 @@ function createDecorations(
             continue;
           }
           replacementContent = data.content ?? '';
-          if (suggestionDisplayMode === 'simple') {
+          const originalQuote = typeof data.originalQuote === 'string' && data.originalQuote.trim().length > 0
+            ? data.originalQuote
+            : null;
+          if (originalQuote) {
+            if (suggestionDisplayMode === 'simple') {
+              style = STYLES.insert_simple;
+              cssClass = 'mark-replace mark-insert mark-simple mark-simple-replace-current';
+              widgetPos = ranges.reduce((minPos, range) => Math.min(minPos, range.from), ranges[0]?.from ?? 0);
+              widgetClassName = 'mark-simple-indicator mark-simple-delete-indicator';
+              widgetStyle = STYLES.change_indicator;
+              widgetRole = 'hidden-change-indicator';
+            } else {
+              style = STYLES.insert;
+              cssClass = 'mark-replace mark-insert';
+              widgetPos = ranges.reduce((minPos, range) => Math.min(minPos, range.from), ranges[0]?.from ?? 0);
+              widgetClassName = 'mark-replace-delete mark-delete';
+              widgetStyle = STYLES.delete;
+              widgetText = originalQuote;
+              widgetRole = 'replace-original';
+            }
+          } else if (suggestionDisplayMode === 'simple') {
             style = STYLES.hidden_source;
             cssClass = 'mark-replace mark-delete mark-simple mark-hidden-source';
             hideSourceContent = true;
@@ -3283,7 +3333,7 @@ function createDecorations(
               decorationRole: widgetRole,
               className: [widgetClassName, glowClass].filter(Boolean).join(' '),
               style: widgetStyle,
-              text: widgetRole === 'replace-preview' ? widgetText : '',
+              text: widgetRole === 'replace-preview' || widgetRole === 'replace-original' ? widgetText : '',
             }
           )
         );

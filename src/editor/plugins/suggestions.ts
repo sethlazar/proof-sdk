@@ -10,7 +10,7 @@ import { Plugin, PluginKey, TextSelection, type EditorState, type Transaction } 
 import type { MarkType, Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 
 import { marksPluginKey, getMarkMetadata, buildSuggestionMetadata, getMarks } from './marks';
-import { generateMarkId, type InsertData, type MarkRange } from '../../formats/marks';
+import { generateMarkId, normalizeQuote, type InsertData, type MarkRange, type StoredMark } from '../../formats/marks';
 import { getCurrentActor } from '../actor';
 
 // Suggestion state
@@ -35,6 +35,13 @@ type SliceNode = {
 const COALESCE_WINDOW_MS = 750;
 
 type InsertCoalesceState = { id: string; from: number; to: number; by: string; updatedAt: number };
+
+type EditableSuggestionCandidate = {
+  id: string;
+  kind: 'insert' | 'replace';
+  range: MarkRange;
+  originalQuote?: string;
+};
 
 const lastInsertByActor = new Map<string, InsertCoalesceState>();
 
@@ -130,12 +137,136 @@ function detectSuggestionKinds(
   return found;
 }
 
+function getSuggestionAnchorRange(
+  doc: ProseMirrorNode,
+  suggestionType: MarkType,
+  id: string
+): MarkRange | null {
+  let range: MarkRange | null = null;
+
+  doc.descendants((node, pos) => {
+    if (!node.isText) return true;
+    const matches = node.marks.some((mark) => mark.type === suggestionType && mark.attrs.id === id);
+    if (!matches) return true;
+
+    const from = pos;
+    const to = pos + node.nodeSize;
+    if (range && from <= range.to) {
+      range.to = Math.max(range.to, to);
+    } else if (!range) {
+      range = { from, to };
+    }
+    return true;
+  });
+
+  return range;
+}
+
+function findEditableSuggestionCandidate(
+  doc: ProseMirrorNode,
+  metadata: Record<string, StoredMark>,
+  suggestionType: MarkType,
+  from: number,
+  to: number,
+  actor: string
+): EditableSuggestionCandidate | null {
+  const candidates = new Map<string, EditableSuggestionCandidate>();
+
+  doc.descendants((node, pos) => {
+    if (!node.isText) return true;
+    for (const mark of node.marks) {
+      if (mark.type !== suggestionType) continue;
+      const id = typeof mark.attrs.id === 'string' ? mark.attrs.id : null;
+      if (!id) continue;
+      const kind = normalizeSuggestionKind(mark.attrs.kind);
+      if (kind !== 'insert' && kind !== 'replace') continue;
+
+      const stored = metadata[id];
+      const by = typeof stored?.by === 'string' ? stored.by : String(mark.attrs.by ?? 'unknown');
+      const status = stored?.status;
+      if (by !== actor || (status && status !== 'pending')) continue;
+
+      const originalQuote = kind === 'replace' && typeof stored?.originalQuote === 'string' && stored.originalQuote.trim().length > 0
+        ? stored.originalQuote
+        : undefined;
+      if (kind === 'replace' && !originalQuote) continue;
+
+      const existing = candidates.get(id);
+      const nodeFrom = pos;
+      const nodeTo = pos + node.nodeSize;
+      if (existing) {
+        existing.range.from = Math.min(existing.range.from, nodeFrom);
+        existing.range.to = Math.max(existing.range.to, nodeTo);
+      } else {
+        candidates.set(id, {
+          id,
+          kind,
+          range: { from: nodeFrom, to: nodeTo },
+          ...(originalQuote ? { originalQuote } : {}),
+        });
+      }
+    }
+    return true;
+  });
+
+  const matches = [...candidates.values()].filter((candidate) => {
+    if (from === to) {
+      return from >= candidate.range.from && from <= candidate.range.to;
+    }
+    return from >= candidate.range.from && to <= candidate.range.to;
+  });
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function syncEditableSuggestionMetadata(
+  metadata: Record<string, StoredMark>,
+  doc: ProseMirrorNode,
+  suggestionType: MarkType,
+  candidate: EditableSuggestionCandidate
+): { metadata: Record<string, StoredMark>; range: MarkRange | null } {
+  const range = getSuggestionAnchorRange(doc, suggestionType, candidate.id);
+  if (!range) {
+    if (candidate.kind === 'insert') {
+      const next = { ...metadata };
+      delete next[candidate.id];
+      return { metadata: next, range: null };
+    }
+    return { metadata, range: null };
+  }
+
+  const text = doc.textBetween(range.from, range.to, '\n', '\n');
+  const existing = metadata[candidate.id];
+  const nextEntry: StoredMark = {
+    ...existing,
+    kind: candidate.kind,
+    content: text,
+    quote: normalizeQuote(text),
+    range: { from: range.from, to: range.to },
+    startRel: undefined,
+    endRel: undefined,
+    status: existing?.status ?? 'pending',
+  };
+
+  if (candidate.originalQuote) {
+    nextEntry.originalQuote = candidate.originalQuote;
+  }
+
+  return {
+    metadata: {
+      ...metadata,
+      [candidate.id]: nextEntry,
+    },
+    range,
+  };
+}
+
 /**
  * Wrap a transaction to convert edits to suggestions when enabled.
  * This intercepts the transaction and converts direct edits into tracked changes:
  * - Insertions get marked with proofSuggestion kind=insert
  * - Deletions get marked with proofSuggestion kind=delete instead of being removed
- * - Replacements become proofSuggestion kind=replace with content stored in metadata
+ * - Replacements can stay anchored on live replacement text while retaining original text in metadata
  */
 export function wrapTransactionForSuggestions(
   tr: Transaction,
@@ -196,6 +327,113 @@ export function wrapTransactionForSuggestions(
       const docSize = newTr.doc.content.size;
       const safeFrom = Math.max(0, Math.min(from, docSize));
       const safeTo = Math.max(safeFrom, Math.min(to, docSize));
+      const editableSuggestion = findEditableSuggestionCandidate(
+        newTr.doc,
+        metadata,
+        suggestionType,
+        safeFrom,
+        safeTo,
+        actor,
+      );
+
+      if (editableSuggestion) {
+        lastInsertByActor.delete(actor);
+
+        if (!deletedText && insertedText) {
+          newTr.insertText(insertedText, safeFrom);
+          newTr.addMark(
+            safeFrom,
+            safeFrom + insertedText.length,
+            suggestionType.create({ id: editableSuggestion.id, kind: editableSuggestion.kind, by: actor })
+          );
+          writeOffset += insertedText.length;
+
+          const synced = syncEditableSuggestionMetadata(metadata, newTr.doc, suggestionType, editableSuggestion);
+          metadata = synced.metadata;
+          metadataChanged = true;
+
+          if (editableSuggestion.kind === 'insert' && synced.range) {
+            lastInsertByActor.set(actor, {
+              id: editableSuggestion.id,
+              from: synced.range.from,
+              to: synced.range.to,
+              by: actor,
+              updatedAt: Date.now(),
+            });
+          }
+          continue;
+        }
+
+        if (deletedText && !insertedText) {
+          const deletingWholeSuggestion = safeFrom === editableSuggestion.range.from && safeTo === editableSuggestion.range.to;
+          if (deletingWholeSuggestion && editableSuggestion.kind === 'replace' && editableSuggestion.originalQuote) {
+            newTr.insertText(editableSuggestion.originalQuote, safeFrom, safeTo);
+            newTr.addMark(
+              safeFrom,
+              safeFrom + editableSuggestion.originalQuote.length,
+              suggestionType.create({ id: editableSuggestion.id, kind: 'delete', by: actor })
+            );
+            writeOffset += editableSuggestion.originalQuote.length - deletedText.length;
+
+            metadata = {
+              ...metadata,
+              [editableSuggestion.id]: {
+                ...metadata[editableSuggestion.id],
+                kind: 'delete',
+                status: metadata[editableSuggestion.id]?.status ?? 'pending',
+                quote: normalizeQuote(editableSuggestion.originalQuote),
+                content: undefined,
+                originalQuote: undefined,
+                range: { from: safeFrom, to: safeFrom + editableSuggestion.originalQuote.length },
+                startRel: undefined,
+                endRel: undefined,
+              },
+            };
+            metadataChanged = true;
+            newTr.setSelection(TextSelection.create(newTr.doc, safeFrom));
+            continue;
+          }
+
+          newTr.delete(safeFrom, safeTo);
+          writeOffset -= deletedText.length;
+
+          if (deletingWholeSuggestion && editableSuggestion.kind === 'insert') {
+            const nextMetadata = { ...metadata };
+            delete nextMetadata[editableSuggestion.id];
+            metadata = nextMetadata;
+          } else {
+            const synced = syncEditableSuggestionMetadata(metadata, newTr.doc, suggestionType, editableSuggestion);
+            metadata = synced.metadata;
+          }
+          metadataChanged = true;
+          continue;
+        }
+
+        if (deletedText && insertedText) {
+          newTr.insertText(insertedText, safeFrom, safeTo);
+          newTr.addMark(
+            safeFrom,
+            safeFrom + insertedText.length,
+            suggestionType.create({ id: editableSuggestion.id, kind: editableSuggestion.kind, by: actor })
+          );
+          writeOffset += insertedText.length - deletedText.length;
+
+          const synced = syncEditableSuggestionMetadata(metadata, newTr.doc, suggestionType, editableSuggestion);
+          metadata = synced.metadata;
+          metadataChanged = true;
+
+          if (editableSuggestion.kind === 'insert' && synced.range) {
+            lastInsertByActor.set(actor, {
+              id: editableSuggestion.id,
+              from: synced.range.from,
+              to: synced.range.to,
+              by: actor,
+              updatedAt: Date.now(),
+            });
+          }
+          continue;
+        }
+      }
 
       // CASE 1: Pure deletion (no insertion)
       if (deletedText && !insertedText) {
@@ -402,24 +640,31 @@ export function wrapTransactionForSuggestions(
           };
           metadataChanged = true;
         } else {
-          // Replace: keep original text, store replacement content in metadata.
+          // Replace: show the live replacement text and keep the original text in metadata.
           const suggestionId = generateMarkId();
           const createdAt = new Date().toISOString();
 
-          newTr.removeMark(safeFrom, safeTo, suggestionType);
-          newTr.addMark(safeFrom, safeTo, suggestionType.create({
+          newTr.insertText(insertedText, safeFrom, safeTo);
+          newTr.addMark(safeFrom, safeFrom + insertedText.length, suggestionType.create({
             id: suggestionId,
             kind: 'replace',
             by: actor,
           }));
+          writeOffset += insertedText.length - deletedText.length;
 
           metadata = {
             ...metadata,
-            [suggestionId]: buildSuggestionMetadata('replace', actor, insertedText, createdAt),
+            [suggestionId]: {
+              ...buildSuggestionMetadata('replace', actor, insertedText, createdAt),
+              content: insertedText,
+              originalQuote: normalizeQuote(deletedText),
+              quote: normalizeQuote(insertedText),
+              range: { from: safeFrom, to: safeFrom + insertedText.length },
+              startRel: undefined,
+              endRel: undefined,
+            },
           };
           metadataChanged = true;
-
-          newTr.setSelection(TextSelection.create(newTr.doc, safeTo));
         }
       }
       // CASE 4: Structural-only change (e.g., paragraph join/split with no text content).

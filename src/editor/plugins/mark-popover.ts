@@ -1208,7 +1208,9 @@ class MarkPopoverController {
       detail = data?.content ?? '';
     } else if (mark.kind === 'replace') {
       const data = mark.data as ReplaceData | undefined;
-      detail = data?.content ?? '';
+      const current = data?.content ?? '';
+      const original = typeof data?.originalQuote === 'string' ? data.originalQuote : '';
+      detail = original ? `${original} -> ${current}` : current;
     } else if (mark.kind === 'delete') {
       detail = mark.quote ?? '';
     }
