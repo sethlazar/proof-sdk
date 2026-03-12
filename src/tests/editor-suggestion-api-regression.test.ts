@@ -58,6 +58,12 @@ function run(): void {
     popoverSource.includes("view.dom.addEventListener('mousemove', this.handleEditorMouseMove);")
       && popoverSource.includes("source?: 'direct' | 'hover'")
       && popoverSource.includes("appendDetailRow('Original text', original);")
+      && popoverSource.includes("private renderSuggestionRail(): void {")
+      && popoverSource.includes("getSuggestionDisplayMode(this.view.state) !== 'simple'")
+      && popoverSource.includes("this.suggestionRail.className = 'mark-suggestion-rail';")
+      && popoverSource.includes("button.className = 'mark-suggestion-rail-button';")
+      && popoverSource.includes("const changeLabel = item.markIds.length === 1 ? 'change' : 'changes';")
+      && popoverSource.includes('button.title = `${item.markIds.length} pending ${changeLabel} on this line`;')
       && popoverSource.includes("matchesReviewShortcut(event, { key: 'a', code: 'KeyA' })")
       && popoverSource.includes("matchesReviewShortcut(event, { key: 'r', code: 'KeyR' })")
       && popoverSource.includes("matchesReviewShortcut(event, { key: ']', code: 'BracketRight' })")
@@ -74,7 +80,7 @@ function run(): void {
       && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion popovers to open on hover, honor review shortcuts, use capture-phase review key handling, retry transient review actions, and follow the active suggestion during review navigation',
+    'Expected suggestion review UI to support hover/direct open, a simple-markup suggestion rail, capture-phase review key handling, retry transient review actions, and active suggestion navigation',
   );
   assert(
     editorSource.includes('private scheduleShareMarksFlush(): void {')

@@ -17,6 +17,7 @@ import {
   getActiveMarkId,
   setComposeAnchorRange,
   suggestReplace,
+  getSuggestionDisplayMode,
   type MarkRange,
 } from './marks';
 import {
@@ -263,6 +264,7 @@ class MarkPopoverController {
   private popover: HTMLDivElement;
   private backdrop: HTMLDivElement;
   private strip: HTMLDivElement;
+  private suggestionRail: HTMLDivElement;
   private undoToast: HTMLDivElement;
   private mode: PopoverMode = null;
   private renderMode: RenderMode = 'legacy-popover';
@@ -301,6 +303,7 @@ class MarkPopoverController {
   private hoverPopoverActive: boolean = false;
   private activeSuggestionOpenedFromHover: boolean = false;
   private reviewActionRetryTimer: number | null = null;
+  private suggestionRailSignature: string = '';
 
   private getAdjacentSuggestionMarkId(currentMarkId: string, direction: 'next' | 'prev'): string | null {
     const suggestions = getPendingSuggestions(getMarks(this.view.state))
@@ -406,6 +409,7 @@ class MarkPopoverController {
     if (this.mode && this.anchor && this.renderMode === 'legacy-popover') {
       positionPopover(this.popover, this.view, this.anchor);
     }
+    this.renderSuggestionRail();
     if (shouldUseCommentUiV2()) {
       this.scheduleMobileStripRender();
     }
@@ -413,11 +417,195 @@ class MarkPopoverController {
 
   private handleViewportChange = () => {
     this.updateSheetViewportOffset();
+    this.renderSuggestionRail();
     if (shouldUseCommentUiV2()) {
       this.scheduleMobileStripRender();
     }
     this.scheduleViewportSync();
   };
+
+  private hideSuggestionRail(): void {
+    this.suggestionRail.style.display = 'none';
+    this.suggestionRail.innerHTML = '';
+    this.suggestionRailSignature = '';
+  }
+
+  private renderSuggestionRail(): void {
+    if (!this.view.dom.isConnected || isMobileTouch()) {
+      this.hideSuggestionRail();
+      return;
+    }
+
+    if (getSuggestionDisplayMode(this.view.state) !== 'simple') {
+      this.hideSuggestionRail();
+      return;
+    }
+
+    const pendingSuggestions = getPendingSuggestions(getMarks(this.view.state))
+      .filter((mark) => isSuggestionKind(mark.kind));
+    if (pendingSuggestions.length === 0) {
+      this.hideSuggestionRail();
+      return;
+    }
+
+    let editorRect: DOMRect;
+    try {
+      editorRect = this.view.dom.getBoundingClientRect();
+    } catch {
+      this.hideSuggestionRail();
+      return;
+    }
+
+    if (editorRect.height <= 0 || editorRect.width <= 0) {
+      this.hideSuggestionRail();
+      return;
+    }
+
+    type SuggestionRailItem = {
+      top: number;
+      markIds: string[];
+      active: boolean;
+      kind: 'insert' | 'delete' | 'replace';
+    };
+
+    const grouped = new Map<string, SuggestionRailItem>();
+    for (const mark of pendingSuggestions) {
+      const anchor = resolveAnchorRange(this.view, mark);
+      if (!anchor) continue;
+
+      try {
+        const coords = this.view.coordsAtPos(anchor.from);
+        const relativeTop = clamp(
+          Math.round(coords.top - editorRect.top),
+          0,
+          Math.max(0, Math.round(editorRect.height - 20)),
+        );
+        const key = String(relativeTop);
+        const existing = grouped.get(key);
+        if (existing) {
+          existing.markIds.push(mark.id);
+          existing.active = existing.active || mark.id === this.activeMarkId;
+          if (existing.kind !== 'replace' && mark.kind === 'replace') {
+            existing.kind = mark.kind;
+          }
+          continue;
+        }
+        grouped.set(key, {
+          top: relativeTop,
+          markIds: [mark.id],
+          active: mark.id === this.activeMarkId,
+          kind: mark.kind,
+        });
+      } catch {
+        // Ignore marks whose current position can no longer be resolved visually.
+      }
+    }
+
+    const items = Array.from(grouped.values())
+      .sort((a, b) => a.top - b.top);
+
+    if (items.length === 0) {
+      this.hideSuggestionRail();
+      return;
+    }
+
+    const railWidth = 18;
+    const railLeft = clamp(
+      Math.round(editorRect.right + 12),
+      8,
+      Math.max(8, Math.round(window.innerWidth - railWidth - 8)),
+    );
+    this.suggestionRail.style.cssText = [
+      'position: fixed',
+      `left: ${railLeft}px`,
+      `top: ${Math.round(editorRect.top)}px`,
+      `width: ${railWidth}px`,
+      `height: ${Math.round(editorRect.height)}px`,
+      'pointer-events: none',
+      'z-index: 120',
+      'display: block',
+    ].join(';');
+
+    const signature = JSON.stringify({
+      railLeft,
+      railTop: Math.round(editorRect.top),
+      railHeight: Math.round(editorRect.height),
+      items: items.map((item) => ({
+        top: item.top,
+        ids: item.markIds,
+        active: item.active,
+        kind: item.kind,
+      })),
+    });
+    if (signature === this.suggestionRailSignature) {
+      return;
+    }
+
+    this.suggestionRailSignature = signature;
+    this.suggestionRail.innerHTML = '';
+
+    for (const item of items) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'mark-suggestion-rail-button';
+      button.dataset.markId = item.markIds[0] ?? '';
+      button.dataset.markIds = item.markIds.join(',');
+      button.dataset.markKind = item.kind;
+
+      const baseColor = item.kind === 'delete' ? '#ef4444' : '#15803d';
+      const borderColor = item.active ? '#111827' : baseColor;
+      const background = item.active
+        ? baseColor
+        : (item.kind === 'delete' ? 'rgba(239, 68, 68, 0.16)' : 'rgba(21, 128, 61, 0.16)');
+
+      button.style.cssText = [
+        'position: absolute',
+        'right: 4px',
+        `top: ${item.top}px`,
+        'width: 10px',
+        `height: ${item.markIds.length > 1 ? 20 : 16}px`,
+        'border-radius: 999px',
+        `border: 1px solid ${borderColor}`,
+        `background: ${background}`,
+        'box-sizing: border-box',
+        'pointer-events: auto',
+        'cursor: pointer',
+        'padding: 0',
+        'display: inline-flex',
+        'align-items: center',
+        'justify-content: center',
+        'font: 600 9px/1 system-ui, sans-serif',
+        `color: ${item.active ? '#ffffff' : baseColor}`,
+        'box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12)',
+      ].join(';');
+
+      if (item.markIds.length > 1) {
+        button.textContent = String(item.markIds.length);
+      }
+
+      const changeLabel = item.markIds.length === 1 ? 'change' : 'changes';
+      button.title = `${item.markIds.length} pending ${changeLabel} on this line`;
+      button.setAttribute('aria-label', button.title);
+
+      button.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const currentId = this.activeMarkId;
+        const currentIndex = currentId ? item.markIds.indexOf(currentId) : -1;
+        const nextMarkId = currentIndex >= 0
+          ? item.markIds[(currentIndex + 1) % item.markIds.length] ?? item.markIds[0] ?? null
+          : item.markIds[0] ?? null;
+        if (!nextMarkId) return;
+        this.openForMark(nextMarkId, undefined, { source: 'direct' });
+      });
+
+      this.suggestionRail.appendChild(button);
+    }
+  }
 
   private handleEditorTouchStart = () => {
     if (!shouldUseCommentUiV2()) return;
@@ -761,10 +949,24 @@ class MarkPopoverController {
     this.undoToast.className = 'mark-mobile-undo';
     this.undoToast.style.display = 'none';
 
+    this.suggestionRail = document.createElement('div');
+    this.suggestionRail.className = 'mark-suggestion-rail';
+    this.suggestionRail.style.display = 'none';
+    this.suggestionRail.addEventListener('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    this.suggestionRail.addEventListener('mousedown', (event) => {
+      event.stopPropagation();
+    });
+    this.suggestionRail.addEventListener('click', (event) => {
+      event.stopPropagation();
+    });
+
     document.body.appendChild(this.backdrop);
     document.body.appendChild(this.popover);
     document.body.appendChild(this.strip);
     document.body.appendChild(this.undoToast);
+    document.body.appendChild(this.suggestionRail);
 
     view.dom.addEventListener('pointerdown', this.handleEditorPointerDown);
     view.dom.addEventListener('click', this.handleEditorClick);
@@ -954,6 +1156,7 @@ class MarkPopoverController {
     this.backdrop.remove();
     this.strip.remove();
     this.undoToast.remove();
+    this.suggestionRail.remove();
     this.clearMobileStripPadding();
   }
 
@@ -1018,6 +1221,7 @@ class MarkPopoverController {
       }
     }
 
+    this.renderSuggestionRail();
     this.scheduleMobileStripRender();
   }
 
