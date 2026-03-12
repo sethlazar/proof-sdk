@@ -996,15 +996,19 @@ function buildCommentData(id: string, meta: StoredMark | undefined): CommentData
 function buildSuggestionData(
   kind: MarkKind,
   meta: StoredMark | undefined,
-  quote: string
+  quote: string,
+  liveText?: string
 ): InsertData | DeleteData | ReplaceData {
   const status = meta?.status ?? 'pending';
   const orchestrationMeta = extractOrchestrationMeta(meta);
+  const currentText = typeof liveText === 'string' && liveText.length > 0
+    ? liveText
+    : quote;
 
   if (kind === 'insert') {
     return {
       ...orchestrationMeta,
-      content: meta?.content ?? quote,
+      content: currentText || meta?.content || '',
       status,
     } as InsertData;
   }
@@ -1015,7 +1019,7 @@ function buildSuggestionData(
       : undefined;
     return {
       ...orchestrationMeta,
-      content: originalQuote ? quote : (meta?.content ?? quote),
+      content: originalQuote ? currentText : (meta?.content ?? currentText),
       ...(originalQuote ? { originalQuote } : {}),
       status,
     } as ReplaceData;
@@ -1172,7 +1176,7 @@ function buildAnchorMarks(
     if (anchor.kind === 'comment') {
       data = buildCommentData(anchor.id, pluginMeta);
     } else if (anchor.kind === 'insert' || anchor.kind === 'delete' || anchor.kind === 'replace') {
-      data = buildSuggestionData(anchor.kind, meta as StoredMark | undefined, quote);
+      data = buildSuggestionData(anchor.kind, meta as StoredMark | undefined, quote, text);
     } else if (anchor.kind === 'flagged') {
       data = pluginMeta?.note ? { note: pluginMeta.note } : undefined;
     }
@@ -1211,7 +1215,7 @@ function buildAnchorMarks(
     if (stored.kind === 'comment') {
       data = buildCommentData(id, stored);
     } else if (stored.kind === 'insert' || stored.kind === 'delete' || stored.kind === 'replace') {
-      data = buildSuggestionData(stored.kind, stored, quote);
+      data = buildSuggestionData(stored.kind, stored, quote, text);
     } else if (stored.kind === 'flagged') {
       data = stored.note ? { note: stored.note } : undefined;
     }

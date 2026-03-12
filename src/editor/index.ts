@@ -1107,6 +1107,7 @@ class ProofEditorImpl implements ProofEditor {
   private collabTemplateClaimCheckTimer: ReturnType<typeof setTimeout> | null = null;
   private collabTemplateRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private contentSyncTimeout: ReturnType<typeof setTimeout> | null = null;
+  private shareMarksFlushTimer: ReturnType<typeof setTimeout> | null = null;
   private shareRuntimeActivationInFlight: boolean = false;
   private shareInitRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private shareInitRetryCount: number = 0;
@@ -4913,8 +4914,24 @@ class ProofEditorImpl implements ProofEditor {
     });
   }
 
+  private scheduleShareMarksFlush(): void {
+    if (!this.isShareMode || this.suppressMarksSync) return;
+    if (this.shareMarksFlushTimer !== null) return;
+
+    // Let y-prosemirror publish the local content change into the Yjs fragment
+    // before we send mark metadata back through the share runtime.
+    this.shareMarksFlushTimer = setTimeout(() => {
+      this.shareMarksFlushTimer = null;
+      this.flushShareMarks();
+    }, 0);
+  }
+
   private flushShareMarks(_options?: { keepalive?: boolean }): void {
     if (!this.isShareMode || !this.editor || this.suppressMarksSync) return;
+    if (this.shareMarksFlushTimer !== null) {
+      clearTimeout(this.shareMarksFlushTimer);
+      this.shareMarksFlushTimer = null;
+    }
     if (!this.initialMarksSynced) return;
     this.editor.action((ctx) => {
       try {
@@ -5580,13 +5597,10 @@ class ProofEditorImpl implements ProofEditor {
     this.lastReceivedServerMarks = { ...metadata };
     this.initialMarksSynced = true;
 
-    if (this.collabEnabled && this.collabCanEdit) {
-      collabClient.setMarksMetadata(metadata);
-    }
-
-    // In share mode, push marks-only updates immediately for reliability.
     if (this.isShareMode) {
-      this.flushShareMarks();
+      this.scheduleShareMarksFlush();
+    } else if (this.collabEnabled && this.collabCanEdit) {
+      collabClient.setMarksMetadata(metadata);
     }
 
     // Pass marks changes to agent integration for @proof detection

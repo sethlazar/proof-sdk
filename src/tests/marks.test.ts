@@ -4303,6 +4303,58 @@ test('wrapTransactionForSuggestions keeps editing inside a live replace suggesti
   assertEqual(metadata[markId]?.originalQuote, 'world', 'Expected reject metadata to retain the original text');
 });
 
+test('pending insert suggestions expose the live inserted text instead of stale cached content', () => {
+  const markId = 'insert-live-content';
+  const insertMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'human:user' });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: marksSchema.node('doc', null, [
+      marksSchema.node('paragraph', null, [
+        marksSchema.text('Before '),
+        marksSchema.text('planet', [insertMark]),
+        marksSchema.text(' after'),
+      ]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'insert',
+        by: 'human:user',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        content: 'plan',
+        quote: 'plan',
+        status: 'pending',
+      },
+    },
+  }));
+
+  const mark = getMarks(state).find((entry) => entry.id === markId);
+  assert(mark, 'Expected pending insert suggestion to resolve');
+  assertEqual((mark!.data as InsertData | undefined)?.content, 'planet', 'Expected insert suggestion data to prefer the live anchor text');
+
+  const metadata = getMarkMetadataWithQuotes(state);
+  assertEqual(metadata[markId]?.content, 'planet', 'Expected metadata snapshots to preserve the live inserted text');
+  assertEqual(metadata[markId]?.quote, 'planet', 'Expected metadata snapshots to keep the live insert quote');
+});
+
 test('reject restores the original text for live replace suggestions', () => {
   const markId = 'replace-live-reject';
   const replaceMark = marksSchema.marks.proofSuggestion.create({ id: markId, kind: 'replace', by: 'human:seth' });

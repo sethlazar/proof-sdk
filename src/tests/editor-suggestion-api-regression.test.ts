@@ -60,6 +60,20 @@ function run(): void {
       && popoverSource.includes("appendDetailRow('Original text', original);"),
     'Expected suggestion popovers to open on hover and show the original replacement text',
   );
+  assert(
+    editorSource.includes('private scheduleShareMarksFlush(): void {')
+      && editorSource.includes('this.shareMarksFlushTimer = setTimeout(() => {')
+      && editorSource.includes('this.flushShareMarks();'),
+    'Expected share mode mark sync to defer flushes until the next tick',
+  );
+  const handleMarksChangeBlock = sliceBetween(editorSource, '  private handleMarksChange(', '\n  private serializeMarkdown(');
+  assert(
+    handleMarksChangeBlock.includes('if (this.isShareMode) {')
+      && handleMarksChangeBlock.includes('this.scheduleShareMarksFlush();')
+      && handleMarksChangeBlock.includes('} else if (this.collabEnabled && this.collabCanEdit) {')
+      && handleMarksChangeBlock.includes('collabClient.setMarksMetadata(metadata);'),
+    'Expected share mode mark updates to be deferred instead of writing collab metadata immediately',
+  );
 
   const rejectSuggestionBlock = sliceBetween(editorSource, '  rejectSuggestion(id: string): boolean {', '\n  /**');
   assert(rejectSuggestionBlock.includes('return this.markReject(String(id));'), 'Expected rejectSuggestion to delegate to markReject');
