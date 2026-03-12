@@ -70,7 +70,10 @@ function run(): void {
       && popoverSource.includes("private runSuggestionReviewAction(")
       && popoverSource.includes('REVIEW_ACTION_MAX_RETRIES')
       && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId);")
-      && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId);"),
+      && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId);")
+      && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
+      && popoverSource.includes('this.clearReviewActionRetryTimer();')
+      && popoverSource.includes('openForMark('),
     'Expected suggestion popovers to open on hover, honor review shortcuts, use capture-phase review key handling, retry transient review actions, and follow the active suggestion during review navigation',
   );
   assert(

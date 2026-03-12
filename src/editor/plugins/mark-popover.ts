@@ -324,6 +324,7 @@ class MarkPopoverController {
 
   private navigateToSuggestion(markId: string | null): void {
     if (!markId) return;
+    this.clearReviewActionRetryTimer();
     const proof = getProofEditorApi();
     if (proof?.navigateToMark) {
       proof.navigateToMark(markId);
@@ -1045,6 +1046,7 @@ class MarkPopoverController {
     pos?: number | null,
     options?: { threadFocusMode?: ThreadFocusMode; source?: 'direct' | 'hover' },
   ): void {
+    this.clearReviewActionRetryTimer();
     const marks = getMarks(this.view.state);
     const mark = marks.find(item => item.id === markId);
     if (!mark) return;
