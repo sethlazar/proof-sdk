@@ -66,6 +66,8 @@ const MOBILE_SELECTION_POLL_MS = 120;
 const MOBILE_SELECTION_POLL_WINDOW_MS = 1800;
 const SUGGESTION_HOVER_OPEN_DELAY_MS = 120;
 const SUGGESTION_HOVER_CLOSE_DELAY_MS = 180;
+const REVIEW_ACTION_RETRY_DELAY_MS = 150;
+const REVIEW_ACTION_MAX_RETRIES = 12;
 
 type VisibleComment = {
   mark: Mark;
@@ -298,6 +300,7 @@ class MarkPopoverController {
   private hoverPendingMarkId: string | null = null;
   private hoverPopoverActive: boolean = false;
   private activeSuggestionOpenedFromHover: boolean = false;
+  private reviewActionRetryTimer: number | null = null;
 
   private getAdjacentSuggestionMarkId(currentMarkId: string, direction: 'next' | 'prev'): string | null {
     const suggestions = getPendingSuggestions(getMarks(this.view.state))
@@ -491,6 +494,66 @@ class MarkPopoverController {
     this.hoverPendingMarkId = null;
   }
 
+  private clearReviewActionRetryTimer(): void {
+    if (this.reviewActionRetryTimer !== null) {
+      window.clearTimeout(this.reviewActionRetryTimer);
+      this.reviewActionRetryTimer = null;
+    }
+  }
+
+  private runSuggestionReviewAction(
+    markId: string,
+    action: 'accept' | 'reject',
+    nextMarkId: string | null,
+  ): void {
+    this.clearReviewActionRetryTimer();
+
+    const runAction = (): boolean => {
+      const proof = getProofEditorApi();
+      if (action === 'accept') {
+        if (proof?.markAccept) {
+          return proof.markAccept(markId);
+        }
+        return acceptSuggestion(this.view, markId);
+      }
+      if (proof?.markReject) {
+        return proof.markReject(markId);
+      }
+      return rejectSuggestion(this.view, markId);
+    };
+
+    const finish = (): void => {
+      this.clearReviewActionRetryTimer();
+      if (nextMarkId) {
+        this.navigateToSuggestion(nextMarkId);
+      } else {
+        this.close();
+      }
+    };
+
+    const attempt = (remainingRetries: number): void => {
+      const markStillExists = getMarks(this.view.state).some((item) => item.id === markId);
+      if (!markStillExists) {
+        finish();
+        return;
+      }
+
+      if (runAction()) {
+        finish();
+        return;
+      }
+
+      if (remainingRetries <= 0) return;
+
+      this.reviewActionRetryTimer = window.setTimeout(() => {
+        this.reviewActionRetryTimer = null;
+        attempt(remainingRetries - 1);
+      }, REVIEW_ACTION_RETRY_DELAY_MS);
+    };
+
+    attempt(REVIEW_ACTION_MAX_RETRIES);
+  }
+
   private scheduleSuggestionHoverClose(): void {
     if (isMobileTouch()) return;
     if (!this.activeSuggestionOpenedFromHover) return;
@@ -594,34 +657,14 @@ class MarkPopoverController {
     if (matchesReviewShortcut(event, { key: 'a', code: 'KeyA' })) {
       event.preventDefault();
       event.stopPropagation();
-      const proof = getProofEditorApi();
-      if (proof?.markAccept) {
-        proof.markAccept(mark.id);
-      } else {
-        acceptSuggestion(this.view, mark.id);
-      }
-      if (nextMarkId) {
-        this.navigateToSuggestion(nextMarkId);
-      } else {
-        this.close();
-      }
+      this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId);
       return;
     }
 
     if (matchesReviewShortcut(event, { key: 'r', code: 'KeyR' })) {
       event.preventDefault();
       event.stopPropagation();
-      const proof = getProofEditorApi();
-      if (proof?.markReject) {
-        proof.markReject(mark.id);
-      } else {
-        rejectSuggestion(this.view, mark.id);
-      }
-      if (nextMarkId) {
-        this.navigateToSuggestion(nextMarkId);
-      } else {
-        this.close();
-      }
+      this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId);
       return;
     }
 
@@ -896,6 +939,7 @@ class MarkPopoverController {
       this.blurPendingTimer = null;
     }
     this.stopSelectionPolling();
+    this.clearReviewActionRetryTimer();
     if (this.viewportSyncRaf !== null) {
       cancelAnimationFrame(this.viewportSyncRaf);
       this.viewportSyncRaf = null;
@@ -1054,6 +1098,7 @@ class MarkPopoverController {
     this.cachedActionRangeAt = 0;
     this.activeSuggestionOpenedFromHover = false;
     this.hoverPopoverActive = false;
+    this.clearReviewActionRetryTimer();
 
     this.hideOverlayChrome();
 
@@ -1065,7 +1110,7 @@ class MarkPopoverController {
 
     document.removeEventListener('pointerdown', this.handleOutsidePointerDown);
     document.removeEventListener('mousedown', this.handleOutsideClick);
-    document.removeEventListener('keydown', this.handleKeydown);
+    document.removeEventListener('keydown', this.handleKeydown, true);
     // Defer focus restoration so that outside clicks can land on their
     // intended target first. If after a frame the focus is still on body
     // or inside the now-hidden popover/strip/backdrop, restore to editor.
@@ -1114,7 +1159,7 @@ class MarkPopoverController {
     }
     document.addEventListener('pointerdown', this.handleOutsidePointerDown);
     document.addEventListener('mousedown', this.handleOutsideClick);
-    document.addEventListener('keydown', this.handleKeydown);
+    document.addEventListener('keydown', this.handleKeydown, true);
   }
 
   private hideOverlayChrome(): void {
@@ -1496,17 +1541,7 @@ class MarkPopoverController {
     applyButton.title = 'Accept change (Cmd/Ctrl+Alt+A)';
     installTouchSafeButton(applyButton, () => {
       if (!canEdit) return;
-      const proof = getProofEditorApi();
-      if (proof?.markAccept) {
-        proof.markAccept(mark.id);
-      } else {
-        acceptSuggestion(this.view, mark.id);
-      }
-      if (nextMarkId) {
-        this.navigateToSuggestion(nextMarkId);
-      } else {
-        this.close();
-      }
+      this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId);
     });
 
     const rejectButton = document.createElement('button');
@@ -1515,17 +1550,7 @@ class MarkPopoverController {
     rejectButton.title = 'Reject change (Cmd/Ctrl+Alt+R)';
     installTouchSafeButton(rejectButton, () => {
       if (!canEdit) return;
-      const proof = getProofEditorApi();
-      if (proof?.markReject) {
-        proof.markReject(mark.id);
-      } else {
-        rejectSuggestion(this.view, mark.id);
-      }
-      if (nextMarkId) {
-        this.navigateToSuggestion(nextMarkId);
-      } else {
-        this.close();
-      }
+      this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId);
     });
 
     if (canEdit) {

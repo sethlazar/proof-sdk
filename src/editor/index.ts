@@ -1215,6 +1215,22 @@ class ProofEditorImpl implements ProofEditor {
     this.isShareMode = shareClient.isShareMode();
   }
 
+  private notifyAuthorshipStatsUpdated(stats: ReturnType<typeof getAuthorshipStats>): void {
+    const bridge = (this as ProofEditorImpl & {
+      bridge?: {
+        authorshipStatsUpdated?: (nextStats: ReturnType<typeof getAuthorshipStats>) => void;
+      };
+    }).bridge;
+
+    if (!bridge || typeof bridge.authorshipStatsUpdated !== 'function') return;
+
+    try {
+      bridge.authorshipStatsUpdated(stats);
+    } catch (error) {
+      console.error('[authorshipStatsUpdated] Failed to notify bridge:', error);
+    }
+  }
+
   async init(): Promise<void> {
     const root = document.getElementById('editor');
     if (!root) {
@@ -8694,7 +8710,7 @@ class ProofEditorImpl implements ProofEditor {
       if (success) {
         captureEvent('suggestion_accepted', { count: 1 });
         const stats = getAuthorshipStats(view);
-        this.bridge.authorshipStatsUpdated(stats);
+        this.notifyAuthorshipStatsUpdated(stats);
       }
     });
 
@@ -8786,7 +8802,7 @@ class ProofEditorImpl implements ProofEditor {
             const innerView = innerCtx.get(editorViewCtx);
             applyRemoteMarks(innerView, latestServerMarks!, { hydrateAnchors: this.collabCanEdit });
             const stats = getAuthorshipStats(innerView);
-            this.bridge.authorshipStatsUpdated(stats);
+            this.notifyAuthorshipStatsUpdated(stats);
           });
         }
         if (acceptedCount > 0) {
@@ -8839,7 +8855,7 @@ class ProofEditorImpl implements ProofEditor {
       if (count > 0) {
         captureEvent('suggestion_accepted', { count });
         const stats = getAuthorshipStats(view);
-        this.bridge.authorshipStatsUpdated(stats);
+        this.notifyAuthorshipStatsUpdated(stats);
       }
     });
 
@@ -8896,7 +8912,7 @@ class ProofEditorImpl implements ProofEditor {
       if (count > 0) {
         captureEvent('suggestion_rejected', { count });
         const stats = getAuthorshipStats(view);
-        this.bridge.authorshipStatsUpdated(stats);
+        this.notifyAuthorshipStatsUpdated(stats);
       }
     });
     return count;

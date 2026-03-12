@@ -64,14 +64,26 @@ function run(): void {
       && popoverSource.includes("matchesReviewShortcut(event, { key: '[', code: 'BracketLeft' })")
       && popoverSource.includes('const stateActiveMarkId = getActiveMarkId(view.state);')
       && popoverSource.includes("if (this.mode === 'suggestion') {")
-      && popoverSource.includes('if (stateActiveMarkId && stateActiveMarkId !== this.activeMarkId) {'),
-    'Expected suggestion popovers to open on hover, honor review shortcuts, and follow the active suggestion during review navigation',
+      && popoverSource.includes('if (stateActiveMarkId && stateActiveMarkId !== this.activeMarkId) {')
+      && popoverSource.includes("document.addEventListener('keydown', this.handleKeydown, true);")
+      && popoverSource.includes("document.removeEventListener('keydown', this.handleKeydown, true);")
+      && popoverSource.includes("private runSuggestionReviewAction(")
+      && popoverSource.includes('REVIEW_ACTION_MAX_RETRIES')
+      && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId);")
+      && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId);"),
+    'Expected suggestion popovers to open on hover, honor review shortcuts, use capture-phase review key handling, retry transient review actions, and follow the active suggestion during review navigation',
   );
   assert(
     editorSource.includes('private scheduleShareMarksFlush(): void {')
       && editorSource.includes('this.shareMarksFlushTimer = setTimeout(() => {')
       && editorSource.includes('this.flushShareMarks();'),
     'Expected share mode mark sync to defer flushes until the next tick',
+  );
+  assert(
+    editorSource.includes('private notifyAuthorshipStatsUpdated(stats: ReturnType<typeof getAuthorshipStats>): void {')
+      && editorSource.includes("if (!bridge || typeof bridge.authorshipStatsUpdated !== 'function') return;")
+      && !editorSource.includes('this.bridge.authorshipStatsUpdated(stats);'),
+    'Expected authorship bridge notifications to be guarded so web share pages do not throw on review actions',
   );
   const handleMarksChangeBlock = sliceBetween(editorSource, '  private handleMarksChange(', '\n  private serializeMarkdown(');
   assert(
