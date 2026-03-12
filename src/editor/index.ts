@@ -124,11 +124,15 @@ import {
   getAuthorshipStats,
   coalesceMarks,
   updateMarksAfterEdit,
+  getSuggestionDisplayMode,
+  setSuggestionDisplayMode,
+  toggleSuggestionDisplayMode,
   type Mark,
   type MarkKind,
   type MarkRange,
   type CommentData,
   type StoredMark,
+  type SuggestionDisplayMode,
   mergePendingServerMarks,
   getMarksByKind,
   getPendingSuggestions,
@@ -221,6 +225,62 @@ const LEGACY_REST_FALLBACK = false;
 declare global {
   interface Window {
     proof: ProofEditor;
+  }
+}
+
+const TRACK_CHANGES_VIEW_QUERY_KEY = 'trackChangesView';
+const TRACK_CHANGES_VIEW_STORAGE_KEY = 'proof.trackChangesView';
+
+type ProofConfigWindow = Window & {
+  __PROOF_CONFIG__?: {
+    trackChangesViewDefaultMode?: string;
+  };
+};
+
+function normalizeTrackChangesViewMode(value: unknown): SuggestionDisplayMode {
+  return value === 'simple' ? 'simple' : 'all';
+}
+
+function readTrackChangesViewModeFromQuery(): SuggestionDisplayMode | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get(TRACK_CHANGES_VIEW_QUERY_KEY);
+    return mode ? normalizeTrackChangesViewMode(mode) : null;
+  } catch {
+    return null;
+  }
+}
+
+function readTrackChangesViewModeFromStorage(): SuggestionDisplayMode | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const stored = window.localStorage.getItem(TRACK_CHANGES_VIEW_STORAGE_KEY);
+    return stored ? normalizeTrackChangesViewMode(stored) : null;
+  } catch {
+    return null;
+  }
+}
+
+function readTrackChangesViewModeDefault(): SuggestionDisplayMode | null {
+  if (typeof window === 'undefined') return null;
+  const configured = (window as ProofConfigWindow).__PROOF_CONFIG__?.trackChangesViewDefaultMode;
+  return configured ? normalizeTrackChangesViewMode(configured) : null;
+}
+
+function getInitialTrackChangesViewMode(): SuggestionDisplayMode {
+  return readTrackChangesViewModeFromQuery()
+    ?? readTrackChangesViewModeFromStorage()
+    ?? readTrackChangesViewModeDefault()
+    ?? 'all';
+}
+
+function persistTrackChangesViewMode(mode: SuggestionDisplayMode): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(TRACK_CHANGES_VIEW_STORAGE_KEY, mode);
+  } catch {
+    // Best-effort only.
   }
 }
 
@@ -751,6 +811,9 @@ export interface ProofEditor {
   toggleSuggestions(): boolean;
   isSuggestionsEnabled(): boolean;
   getSuggestions(): Mark[];
+  getTrackChangesViewMode(): SuggestionDisplayMode;
+  setTrackChangesViewMode(mode: SuggestionDisplayMode): SuggestionDisplayMode;
+  toggleTrackChangesViewMode(): SuggestionDisplayMode;
   acceptSuggestion(id: string): boolean;
   rejectSuggestion(id: string): boolean;
   acceptAllSuggestions(): number;
@@ -1036,6 +1099,7 @@ class ProofEditorImpl implements ProofEditor {
   private hasLocalContentEditSinceHydration: boolean = false;
   private lastContentChangeSource: 'local' | 'remote' | 'system' | null = null;
   private pendingProjectionPublish: boolean = false;
+  private trackChangesViewMode: SuggestionDisplayMode = getInitialTrackChangesViewMode();
   private initialMarksSynced: boolean = false;
   private lastReceivedServerMarks: Record<string, StoredMark> = {};
   private collabTemplateSeedClaimId: string | null = null;
@@ -1243,6 +1307,7 @@ class ProofEditorImpl implements ProofEditor {
 
     const view = this.editor.ctx.get(editorViewCtx);
     (window as any).__editorView = view;
+    this.trackChangesViewMode = setSuggestionDisplayMode(view, this.trackChangesViewMode);
     this.updateEditableState(view);
     this.cleanupNavigation = initAgentNavigation(view);
 
@@ -4089,6 +4154,44 @@ class ProofEditorImpl implements ProofEditor {
         menu.appendChild(item);
       };
 
+      const addModeItem = (
+        title: string,
+        selected: boolean,
+        onSelect: () => void,
+      ) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.setAttribute('role', 'menuitemradio');
+        item.setAttribute('aria-checked', selected ? 'true' : 'false');
+        item.disabled = selected;
+        item.style.cssText = `
+          width:100%;display:flex;align-items:center;justify-content:space-between;gap:10px;
+          padding:10px 12px;min-height:44px;border-radius:10px;border:0;
+          background:${selected ? 'rgba(255,255,255,0.08)' : 'transparent'};
+          color:rgba(255,255,255,0.92);font-size:12px;font-weight:${selected ? '700' : '600'};
+          cursor:${selected ? 'default' : 'pointer'};text-align:left;
+        `;
+        item.onmouseenter = () => {
+          if (!selected) item.style.background = 'rgba(255,255,255,0.08)';
+        };
+        item.onmouseleave = () => {
+          if (!selected) item.style.background = 'transparent';
+        };
+
+        const left = document.createElement('span');
+        left.textContent = title;
+        const right = document.createElement('span');
+        right.textContent = selected ? 'Current' : '';
+        right.style.cssText = 'font-weight:600;opacity:0.8';
+        item.append(left, right);
+        item.onclick = () => {
+          if (selected) return;
+          onSelect();
+          cleanup();
+        };
+        menu.appendChild(item);
+      };
+
       const addDivider = () => {
         const hr = document.createElement('div');
         hr.style.cssText = 'height:1px;background:rgba(255,255,255,0.10);margin:6px 6px';
@@ -4098,6 +4201,14 @@ class ProofEditorImpl implements ProofEditor {
       addItem('Copy link', async () => this.copyLinkWithFallback(this.getCanonicalShareUrl()));
       addDivider();
       addActionItem('View activity', () => this.openShareActivityModal());
+      addDivider();
+      const currentTrackChangesViewMode = this.getTrackChangesViewMode();
+      addModeItem('Simple markup', currentTrackChangesViewMode === 'simple', () => {
+        this.setTrackChangesViewMode('simple');
+      });
+      addModeItem('All markup', currentTrackChangesViewMode === 'all', () => {
+        this.setTrackChangesViewMode('all');
+      });
 
       container.appendChild(menu);
       this.clampMenuToViewport(menu);
@@ -6428,6 +6539,59 @@ class ProofEditorImpl implements ProofEditor {
       suggestions = getPendingSuggestions(getMarks(view.state));
     });
     return suggestions;
+  }
+
+  /**
+   * Get the current track-changes view mode.
+   */
+  getTrackChangesViewMode(): SuggestionDisplayMode {
+    if (!this.editor) return this.trackChangesViewMode;
+
+    let mode = this.trackChangesViewMode;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      mode = getSuggestionDisplayMode(view.state);
+    });
+    this.trackChangesViewMode = mode;
+    return mode;
+  }
+
+  /**
+   * Set the track-changes view mode.
+   */
+  setTrackChangesViewMode(mode: SuggestionDisplayMode): SuggestionDisplayMode {
+    const nextMode = normalizeTrackChangesViewMode(mode);
+    this.trackChangesViewMode = nextMode;
+    persistTrackChangesViewMode(nextMode);
+
+    if (!this.editor) return nextMode;
+
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      this.trackChangesViewMode = setSuggestionDisplayMode(view, nextMode);
+    });
+    return this.trackChangesViewMode;
+  }
+
+  /**
+   * Toggle between all markup and simple markup.
+   */
+  toggleTrackChangesViewMode(): SuggestionDisplayMode {
+    if (!this.editor) {
+      const nextMode = this.trackChangesViewMode === 'simple' ? 'all' : 'simple';
+      this.trackChangesViewMode = nextMode;
+      persistTrackChangesViewMode(nextMode);
+      return nextMode;
+    }
+
+    let nextMode = this.trackChangesViewMode;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      nextMode = toggleSuggestionDisplayMode(view);
+    });
+    this.trackChangesViewMode = nextMode;
+    persistTrackChangesViewMode(nextMode);
+    return nextMode;
   }
 
   /**

@@ -69,9 +69,12 @@ import {
   deleteMark,
   setComposeAnchorRange,
   getComposeAnchorRange,
+  getSuggestionDisplayMode,
+  setSuggestionDisplayMode,
   __getMarkAnchorHydrationFailure,
   __getMarkAnchorHydrationFailureCount,
   __resetMarkAnchorHydrationFailures,
+  __debugDescribeDecorations,
 } from '../editor/plugins/marks.js';
 import { getTextForRange, resolveQuoteRange } from '../editor/utils/text-range.js';
 import { extractEmbeddedProvenance } from '../formats/provenance-sidecar.js';
@@ -4084,6 +4087,228 @@ test('dedupeProposals keeps valid proposals and still dedupes', () => {
   assertEqual(result.proposals.length, 1);
   assertEqual(result.duplicatesRemoved, 1);
   assertEqual(result.invalidRemoved, 0);
+});
+
+// ============================================================================
+// Suggestion Display Mode
+// ============================================================================
+
+console.log('\n=== Suggestion Display Mode ===');
+
+test('setSuggestionDisplayMode updates plugin state', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+    },
+    marks: {
+      proofSuggestion: {
+        attrs: {
+          id: { default: null },
+          kind: { default: 'replace' },
+          by: { default: 'unknown' },
+          status: { default: 'pending' },
+          content: { default: null },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+    },
+  });
+
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_SUGGESTION_DISPLAY_MODE') {
+          return { ...value, suggestionDisplayMode: meta.mode };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema,
+    doc: schema.node('doc', null, [schema.node('paragraph', null, [schema.text('Alpha')])]),
+    plugins: [marksStatePlugin],
+  });
+
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  assertEqual(getSuggestionDisplayMode(state), 'all', 'Expected default display mode to be all');
+  assertEqual(setSuggestionDisplayMode(view, 'simple'), 'simple', 'Expected setter to return simple');
+  assertEqual(getSuggestionDisplayMode(state), 'simple', 'Expected display mode to update in plugin state');
+});
+
+test('simple markup replaces source text with preview widget for pending replacements', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+    },
+    marks: {
+      proofSuggestion: {
+        attrs: {
+          id: { default: null },
+          kind: { default: 'replace' },
+          by: { default: 'unknown' },
+          status: { default: 'pending' },
+          content: { default: null },
+          createdAt: { default: null },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+    },
+  });
+
+  const markId = 'replace-simple-markup';
+  const replaceMark = schema.marks.proofSuggestion.create({ id: markId, kind: 'replace', by: 'ai:test' });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        if (meta?.type === 'SET_SUGGESTION_DISPLAY_MODE') {
+          return { ...value, suggestionDisplayMode: meta.mode };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema,
+    doc: schema.node('doc', null, [
+      schema.node('paragraph', null, [schema.text('Before '), schema.text('old text', [replaceMark]), schema.text(' after')]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'replace',
+        by: 'ai:test',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        content: 'new text',
+        status: 'pending',
+      },
+    },
+  }));
+
+  const summaries = __debugDescribeDecorations(state, getMarks(state), null, null, 'simple');
+  assert(
+    summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'hidden-source'
+      && summary.className.includes('mark-hidden-source')
+    ),
+    'Expected simple markup to hide replacement source content',
+  );
+  assert(
+    summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'replace-preview'
+      && summary.text === 'new text'
+      && summary.className.includes('mark-simple-replace')
+    ),
+    'Expected simple markup to render replacement preview text inline',
+  );
+});
+
+test('simple markup collapses deletions to a compact indicator', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+    },
+    marks: {
+      proofSuggestion: {
+        attrs: {
+          id: { default: null },
+          kind: { default: 'delete' },
+          by: { default: 'unknown' },
+          status: { default: 'pending' },
+          createdAt: { default: null },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+    },
+  });
+
+  const markId = 'delete-simple-markup';
+  const pendingDeleteMark = schema.marks.proofSuggestion.create({ id: markId, kind: 'delete', by: 'ai:test' });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema,
+    doc: schema.node('doc', null, [
+      schema.node('paragraph', null, [schema.text('Before '), schema.text('remove me', [pendingDeleteMark]), schema.text(' after')]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'delete',
+        by: 'ai:test',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        status: 'pending',
+      },
+    },
+  }));
+
+  const summaries = __debugDescribeDecorations(state, getMarks(state), null, null, 'simple');
+  assert(
+    summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'hidden-source'
+      && summary.className.includes('mark-hidden-source')
+    ),
+    'Expected simple markup to hide deleted source text',
+  );
+  assert(
+    summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'hidden-change-indicator'
+      && summary.className.includes('mark-simple-delete-indicator')
+    ),
+    'Expected simple markup to render a deletion indicator widget',
+  );
 });
 
 // ============================================================================

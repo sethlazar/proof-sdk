@@ -48,6 +48,7 @@ export interface MarksPluginState {
   metadata: Record<string, StoredMark>;
   activeMarkId: string | null;
   composeAnchorRange?: MarkRange | null;
+  suggestionDisplayMode: SuggestionDisplayMode;
 }
 
 export const marksPluginKey = new PluginKey<MarksPluginState>('marks');
@@ -65,6 +66,8 @@ export interface ResolvedMark extends Mark {
   resolvedRange: { from: number; to: number } | null;
   resolvedRanges?: MarkRange[];
 }
+
+export type SuggestionDisplayMode = 'all' | 'simple';
 
 // ============================================================================
 // Helpers
@@ -131,6 +134,10 @@ function hashStringFNV1a(value: string): string {
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   return hash.toString(16).padStart(8, '0');
+}
+
+function normalizeSuggestionDisplayMode(mode: unknown): SuggestionDisplayMode {
+  return mode === 'simple' ? 'simple' : 'all';
 }
 
 function getHydrationDocumentId(): string | null {
@@ -3041,7 +3048,10 @@ const STYLES = {
   compose_anchor: 'background-color: rgba(252, 211, 77, 0.22); border-bottom: 2px dashed #F59E0B;',
 
   insert: 'background-color: rgba(34, 197, 94, 0.25); border-bottom: 2px solid #22C55E;',
+  insert_simple: 'background-color: rgba(34, 197, 94, 0.14); border-bottom: 2px solid rgba(34, 197, 94, 0.72); border-radius: 2px;',
   delete: 'background-color: rgba(239, 68, 68, 0.2); text-decoration: line-through; color: #666;',
+  hidden_source: 'display:inline-block;width:0;max-width:0;overflow:hidden;white-space:nowrap;opacity:0;text-decoration:none;background:transparent;border:none;padding:0;margin:0;pointer-events:none;vertical-align:baseline;',
+  change_indicator: 'display:inline-block;width:8px;height:1.05em;margin:0 1px;vertical-align:text-bottom;border-left:2px solid #ef4444;border-radius:999px;background:rgba(239, 68, 68, 0.08);cursor:pointer;',
 };
 
 function normalizeComposeAnchorRange(range: MarkRange | null, doc: ProseMirrorNode): MarkRange | null {
@@ -3058,7 +3068,8 @@ function createDecorations(
   state: EditorState,
   marks: Mark[],
   activeMarkId: string | null,
-  composeAnchorRange: MarkRange | null
+  composeAnchorRange: MarkRange | null,
+  suggestionDisplayMode: SuggestionDisplayMode
 ): DecorationSet {
   const decorations: Decoration[] = [];
   const resolved = resolveMarks(state.doc, marks);
@@ -3070,6 +3081,13 @@ function createDecorations(
     decorations.push(
       Decoration.inline(safeComposeRange.from, safeComposeRange.to, {
         class: 'mark-compose-anchor',
+        style: STYLES.compose_anchor,
+      }, {
+        markId: null,
+        markKind: 'compose-anchor',
+        renderMode: suggestionDisplayMode,
+        decorationRole: 'compose-anchor',
+        className: 'mark-compose-anchor',
         style: STYLES.compose_anchor,
       })
     );
@@ -3106,6 +3124,12 @@ function createDecorations(
     let cssClass = '';
 
     let replacementContent: string | null = null;
+    let hideSourceContent = false;
+    let widgetPos: number | null = null;
+    let widgetClassName = '';
+    let widgetStyle = '';
+    let widgetText = '';
+    let widgetRole: 'replace-preview' | 'hidden-change-indicator' | null = null;
 
     switch (mark.kind) {
       case 'authored':
@@ -3124,8 +3148,13 @@ function createDecorations(
       case 'insert': {
         const data = mark.data as InsertData;
         if (data?.status === 'pending') {
-          style = STYLES.insert;
-          cssClass = 'mark-insert';
+          if (suggestionDisplayMode === 'simple') {
+            style = STYLES.insert_simple;
+            cssClass = 'mark-insert mark-simple mark-simple-insert';
+          } else {
+            style = STYLES.insert;
+            cssClass = 'mark-insert';
+          }
         }
         break;
       }
@@ -3133,8 +3162,18 @@ function createDecorations(
       case 'delete': {
         const data = mark.data as DeleteData;
         if (data?.status === 'pending') {
-          style = STYLES.delete;
-          cssClass = 'mark-delete';
+          if (suggestionDisplayMode === 'simple') {
+            style = STYLES.hidden_source;
+            cssClass = 'mark-delete mark-simple mark-hidden-source';
+            hideSourceContent = true;
+            widgetPos = ranges.reduce((minPos, range) => Math.min(minPos, range.from), ranges[0]?.from ?? 0);
+            widgetClassName = 'mark-simple-indicator mark-simple-delete-indicator';
+            widgetStyle = STYLES.change_indicator;
+            widgetRole = 'hidden-change-indicator';
+          } else {
+            style = STYLES.delete;
+            cssClass = 'mark-delete';
+          }
         }
         break;
       }
@@ -3145,9 +3184,20 @@ function createDecorations(
           if (!primaryReplaceMarkIds.has(mark.id)) {
             continue;
           }
-          style = STYLES.delete;
-          cssClass = 'mark-replace mark-delete';
           replacementContent = data.content ?? '';
+          if (suggestionDisplayMode === 'simple') {
+            style = STYLES.hidden_source;
+            cssClass = 'mark-replace mark-delete mark-simple mark-hidden-source';
+            hideSourceContent = true;
+            widgetPos = ranges.reduce((minPos, range) => Math.min(minPos, range.from), ranges[0]?.from ?? 0);
+            widgetClassName = 'mark-replace-insert mark-insert mark-simple mark-simple-replace';
+            widgetStyle = STYLES.insert_simple;
+            widgetText = replacementContent;
+            widgetRole = 'replace-preview';
+          } else {
+            style = STYLES.delete;
+            cssClass = 'mark-replace mark-delete';
+          }
         }
         break;
       }
@@ -3166,15 +3216,22 @@ function createDecorations(
             style,
             'data-mark-id': mark.id,
             'data-mark-kind': mark.kind,
+          }, {
+            markId: mark.id,
+            markKind: mark.kind,
+            renderMode: suggestionDisplayMode,
+            decorationRole: hideSourceContent ? 'hidden-source' : 'inline-mark',
+            className: [cssClass, glowClass].filter(Boolean).join(' '),
+            style,
           })
         );
       }
 
-      if (mark.kind === 'replace' && replacementContent !== null) {
-        const widgetPos = ranges.reduce((maxPos, range) => Math.max(maxPos, range.to), 0);
+      if (mark.kind === 'replace' && replacementContent !== null && suggestionDisplayMode === 'all') {
+        const replaceWidgetPos = ranges.reduce((maxPos, range) => Math.max(maxPos, range.to), 0);
         decorations.push(
           Decoration.widget(
-            widgetPos,
+            replaceWidgetPos,
             () => {
               const span = document.createElement('span');
               span.className = ['mark-replace-insert', 'mark-insert', glowClass].filter(Boolean).join(' ');
@@ -3184,7 +3241,50 @@ function createDecorations(
               span.textContent = replacementContent ?? '';
               return span;
             },
-            { side: 1, key: `replace-insert-${mark.id}` }
+            {
+              side: 1,
+              key: `replace-insert-${mark.id}`,
+              markId: mark.id,
+              markKind: mark.kind,
+              renderMode: suggestionDisplayMode,
+              decorationRole: 'replace-preview',
+              className: ['mark-replace-insert', 'mark-insert', glowClass].filter(Boolean).join(' '),
+              style: STYLES.insert,
+              text: replacementContent ?? '',
+            }
+          )
+        );
+      }
+
+      if (widgetRole && widgetPos !== null) {
+        decorations.push(
+          Decoration.widget(
+            widgetPos,
+            () => {
+              const span = document.createElement('span');
+              span.className = [widgetClassName, glowClass].filter(Boolean).join(' ');
+              span.style.cssText = widgetStyle;
+              span.setAttribute('data-mark-id', mark.id);
+              span.setAttribute('data-mark-kind', mark.kind);
+              if (widgetRole === 'hidden-change-indicator') {
+                span.setAttribute('title', 'Hidden deletion');
+                span.setAttribute('aria-label', 'Pending deletion');
+              } else {
+                span.textContent = widgetText;
+              }
+              return span;
+            },
+            {
+              side: -1,
+              key: `${widgetRole}-${mark.id}`,
+              markId: mark.id,
+              markKind: mark.kind,
+              renderMode: suggestionDisplayMode,
+              decorationRole: widgetRole,
+              className: [widgetClassName, glowClass].filter(Boolean).join(' '),
+              style: widgetStyle,
+              text: widgetRole === 'replace-preview' ? widgetText : '',
+            }
           )
         );
       }
@@ -3216,6 +3316,12 @@ function injectGlowStyles(): void {
 
     /* Delete glow */
     .mark-delete.proof-mark-new {
+      animation-name: proof-delete-glow;
+    }
+    .mark-hidden-source.proof-mark-new {
+      animation: none;
+    }
+    .mark-simple-indicator.proof-mark-new {
       animation-name: proof-delete-glow;
     }
     @keyframes proof-delete-glow {
@@ -3469,6 +3575,7 @@ export const marksPlugin = $prose(() => {
           metadata: normalizeMetadata({}, state.doc),
           activeMarkId: null,
           composeAnchorRange: null,
+          suggestionDisplayMode: 'all',
         };
       },
 
@@ -3486,6 +3593,9 @@ export const marksPlugin = $prose(() => {
               break;
             case 'SET_COMPOSE_ANCHOR':
               nextState = { ...value, composeAnchorRange: normalizeComposeAnchorRange(meta.range ?? null, tr.doc) };
+              break;
+            case 'SET_SUGGESTION_DISPLAY_MODE':
+              nextState = { ...value, suggestionDisplayMode: normalizeSuggestionDisplayMode(meta.mode) };
               break;
           }
         }
@@ -3524,12 +3634,68 @@ export const marksPlugin = $prose(() => {
           state,
           collectMarks(state),
           pluginState.activeMarkId,
-          pluginState.composeAnchorRange ?? null
+          pluginState.composeAnchorRange ?? null,
+          pluginState.suggestionDisplayMode
         );
       },
     },
   });
 });
+
+export function getSuggestionDisplayMode(state: EditorState): SuggestionDisplayMode {
+  const pluginState = marksPluginKey.getState(state) as MarksPluginState | undefined;
+  return normalizeSuggestionDisplayMode(pluginState?.suggestionDisplayMode);
+}
+
+export function setSuggestionDisplayMode(view: EditorView, mode: SuggestionDisplayMode): SuggestionDisplayMode {
+  const nextMode = normalizeSuggestionDisplayMode(mode);
+  view.dispatch(
+    view.state.tr
+      .setMeta(marksPluginKey, { type: 'SET_SUGGESTION_DISPLAY_MODE', mode: nextMode })
+      .setMeta('addToHistory', false)
+  );
+  return nextMode;
+}
+
+export function toggleSuggestionDisplayMode(view: EditorView): SuggestionDisplayMode {
+  const nextMode = getSuggestionDisplayMode(view.state) === 'simple' ? 'all' : 'simple';
+  return setSuggestionDisplayMode(view, nextMode);
+}
+
+export function __debugDescribeDecorations(
+  state: EditorState,
+  marks: Mark[],
+  activeMarkId: string | null,
+  composeAnchorRange: MarkRange | null,
+  suggestionDisplayMode: SuggestionDisplayMode
+): Array<{
+  from: number;
+  to: number;
+  markId: string | null;
+  markKind: string | null;
+  renderMode: SuggestionDisplayMode;
+  decorationRole: string | null;
+  className: string;
+  style: string;
+  text: string;
+}> {
+  return createDecorations(state, marks, activeMarkId, composeAnchorRange, suggestionDisplayMode)
+    .find()
+    .map((decoration) => {
+      const spec = decoration.spec as Record<string, unknown> | undefined;
+      return {
+        from: decoration.from,
+        to: decoration.to,
+        markId: typeof spec?.markId === 'string' ? spec.markId : null,
+        markKind: typeof spec?.markKind === 'string' ? spec.markKind : null,
+        renderMode: normalizeSuggestionDisplayMode(spec?.renderMode),
+        decorationRole: typeof spec?.decorationRole === 'string' ? spec.decorationRole : null,
+        className: typeof spec?.className === 'string' ? spec.className : '',
+        style: typeof spec?.style === 'string' ? spec.style : '',
+        text: typeof spec?.text === 'string' ? spec.text : '',
+      };
+    });
+}
 
 // ============================================================================
 // Export

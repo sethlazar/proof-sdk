@@ -21,6 +21,19 @@ function run(): void {
   const acceptSuggestionBlock = sliceBetween(editorSource, '  acceptSuggestion(id: string): boolean {', '\n  /**');
   assert(acceptSuggestionBlock.includes('return this.markAccept(String(id));'), 'Expected acceptSuggestion to delegate to markAccept');
 
+  const getTrackChangesViewModeBlock = sliceBetween(editorSource, '  getTrackChangesViewMode(): SuggestionDisplayMode {', '\n  /**');
+  assert(
+    getTrackChangesViewModeBlock.includes('mode = getSuggestionDisplayMode(view.state);'),
+    'Expected getTrackChangesViewMode to read the marks plugin display mode',
+  );
+
+  const setTrackChangesViewModeBlock = sliceBetween(editorSource, '  setTrackChangesViewMode(mode: SuggestionDisplayMode): SuggestionDisplayMode {', '\n  /**');
+  assert(
+    setTrackChangesViewModeBlock.includes('persistTrackChangesViewMode(nextMode);')
+      && setTrackChangesViewModeBlock.includes('this.trackChangesViewMode = setSuggestionDisplayMode(view, nextMode);'),
+    'Expected setTrackChangesViewMode to persist and dispatch the marks plugin display mode',
+  );
+
   const rejectSuggestionBlock = sliceBetween(editorSource, '  rejectSuggestion(id: string): boolean {', '\n  /**');
   assert(rejectSuggestionBlock.includes('return this.markReject(String(id));'), 'Expected rejectSuggestion to delegate to markReject');
 
