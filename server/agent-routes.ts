@@ -600,6 +600,16 @@ function asPayload(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+function canUseLoadedCollabFallbackForMutation(
+  slug: string,
+  opType: DocumentOpType,
+  canonicalDoc: { read_source?: string } | null | undefined,
+): boolean {
+  if (canonicalDoc?.read_source !== 'yjs_fallback') return false;
+  if (opType !== 'suggestion.accept' && opType !== 'suggestion.reject') return false;
+  return getLoadedCollabMarkdown(slug) !== null;
+}
+
 function enforceMutationPrecondition(
   res: Response,
   slug: string,
@@ -614,7 +624,10 @@ function enforceMutationPrecondition(
   }
 
   const canonicalDoc = getCanonicalReadableDocumentSync(slug, 'state') ?? doc;
-  if (!isCanonicalReadMutationReady(canonicalDoc)) {
+  if (
+    !isCanonicalReadMutationReady(canonicalDoc)
+    && !canUseLoadedCollabFallbackForMutation(slug, opType, canonicalDoc)
+  ) {
     sendMutationResponse(res, 409, {
       success: false,
       code: 'PROJECTION_STALE',
@@ -976,9 +989,11 @@ function notifyCollabMutation(
         if (confirmed && targetMarkdown && (options.stabilityMs ?? 0) > 0) {
           const stable = await verifyLoadedCollabMarkdownStable(slug, targetMarkdown, options.stabilityMs as number);
           if (!stable) {
-            confirmed = false;
-            reason = 'stability_regressed';
             markdownConfirmed = false;
+            if (!fragmentConfirmed) {
+              confirmed = false;
+              reason = 'stability_regressed';
+            }
           }
         }
         if (confirmed && expectedFragmentTextHash && (options.stabilityMs ?? 0) > 0) {
@@ -1072,9 +1087,11 @@ function notifyCollabMutation(
             if (confirmed && targetMarkdown && (options.stabilityMs ?? 0) > 0) {
               const stable = await verifyLoadedCollabMarkdownStable(slug, targetMarkdown, options.stabilityMs as number);
               if (!stable) {
-                confirmed = false;
-                reason = 'stability_regressed';
                 markdownConfirmed = false;
+                if (!fragmentConfirmed) {
+                  confirmed = false;
+                  reason = 'stability_regressed';
+                }
               }
             }
             if (confirmed && expectedFragmentTextHash && (options.stabilityMs ?? 0) > 0) {

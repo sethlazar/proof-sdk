@@ -43,6 +43,9 @@ async function run(): Promise<void> {
       if (stateReads === 2) {
         return jsonResponse({ updatedAt: '2026-03-06T00:00:00.000Z' });
       }
+      if (stateReads === 4) {
+        return jsonResponse({});
+      }
       return jsonResponse({ revision: 40 + stateReads, updatedAt: `2026-03-06T00:00:0${stateReads}.000Z` });
     }
     if (url.pathname === '/api/agent/test-doc/marks/accept') return jsonResponse({ success: true, marks: {} });
@@ -81,7 +84,8 @@ async function run(): Promise<void> {
     assert.equal(resolveRequest?.body?.baseRevision, 43, 'resolveComment should include baseRevision from /state');
 
     const unresolveRequest = requests.find((request) => request.path === '/api/agent/test-doc/marks/unresolve');
-    assert.equal(unresolveRequest?.body?.baseRevision, 44, 'unresolveComment should include baseRevision from /state');
+    assert.equal(unresolveRequest?.body?.baseRevision, undefined, 'unresolveComment should still send when /state omits mutation base');
+    assert.equal(unresolveRequest?.body?.baseUpdatedAt, undefined, 'unresolveComment should omit baseUpdatedAt when /state omits mutation base');
 
     const stateRequestCount = requests.filter((request) => request.path === '/api/agent/test-doc/state').length;
     assert.equal(stateRequestCount, 4, 'each share mark mutation should read the latest mutation base');

@@ -509,7 +509,7 @@ class MarkPopoverController {
       return;
     }
 
-    const railWidth = 18;
+    const railWidth = 24;
     const railLeft = clamp(
       Math.round(editorRect.right + 12),
       8,
@@ -560,10 +560,10 @@ class MarkPopoverController {
 
       button.style.cssText = [
         'position: absolute',
-        'right: 4px',
-        `top: ${item.top}px`,
-        'width: 10px',
-        `height: ${item.markIds.length > 1 ? 20 : 16}px`,
+        'right: 2px',
+        `top: ${Math.max(0, item.top - 2)}px`,
+        'width: 18px',
+        `height: ${item.markIds.length > 1 ? 24 : 20}px`,
         'border-radius: 999px',
         `border: 1px solid ${borderColor}`,
         `background: ${background}`,
@@ -574,7 +574,7 @@ class MarkPopoverController {
         'display: inline-flex',
         'align-items: center',
         'justify-content: center',
-        'font: 600 9px/1 system-ui, sans-serif',
+        'font: 600 10px/1 system-ui, sans-serif',
         `color: ${item.active ? '#ffffff' : baseColor}`,
         'box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12)',
       ].join(';');
@@ -697,6 +697,20 @@ class MarkPopoverController {
   ): void {
     this.clearReviewActionRetryTimer();
 
+    const setReviewButtonsBusy = (busy: boolean): void => {
+      const buttons = Array.from(this.popover.querySelectorAll('.mark-popover-actions button')) as HTMLButtonElement[];
+      for (const button of buttons) {
+        if (busy) {
+          button.dataset.reviewBusyDisabled = button.disabled ? 'true' : 'false';
+          button.disabled = true;
+        } else {
+          button.disabled = button.dataset.reviewBusyDisabled === 'true';
+          delete button.dataset.reviewBusyDisabled;
+        }
+      }
+      this.popover.setAttribute('aria-busy', busy ? 'true' : 'false');
+    };
+
     const runAction = (): boolean => {
       const proof = getProofEditorApi();
       if (action === 'accept') {
@@ -719,6 +733,29 @@ class MarkPopoverController {
         this.close();
       }
     };
+
+    const proof = getProofEditorApi();
+    const persistedAction = action === 'accept'
+      ? (typeof proof?.markAcceptPersisted === 'function'
+        ? () => proof.markAcceptPersisted(markId)
+        : null)
+      : (typeof proof?.markRejectPersisted === 'function'
+        ? () => proof.markRejectPersisted(markId)
+        : null);
+    if (persistedAction) {
+      setReviewButtonsBusy(true);
+      void persistedAction().then((success) => {
+        if (!success) {
+          setReviewButtonsBusy(false);
+          return;
+        }
+        finish();
+      }).catch((error) => {
+        console.error('[mark-popover] Persisted review action failed:', error);
+        setReviewButtonsBusy(false);
+      });
+      return;
+    }
 
     const attempt = (remainingRetries: number): void => {
       const markStillExists = getMarks(this.view.state).some((item) => item.id === markId);

@@ -272,7 +272,10 @@ export class ShareClient {
     if (updatedAt) {
       return { baseUpdatedAt: updatedAt };
     }
-    return this.createLocalRequestError(409, 'missing_mutation_base', 'Could not determine current mutation base');
+    // In share mode, stale-projection fallback reads can legitimately omit revision/updatedAt
+    // while the live collab doc is still authoritative. Let the server decide whether the
+    // mutation is safe instead of blocking locally before the request is sent.
+    return {};
   }
 
   private isShareRole(value: unknown): value is ShareRole {

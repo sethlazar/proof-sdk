@@ -14,6 +14,7 @@ import { refreshSnapshotForSlug } from './snapshot.js';
 import {
   applyCanonicalDocumentToCollab,
   getCanonicalReadableDocumentSync,
+  getLoadedCollabMarkdown,
   invalidateCollabDocument,
   isCanonicalReadMutationReady,
   type CanonicalReadableDocument,
@@ -54,6 +55,14 @@ export type AsyncDocumentMutationContext = {
   doc: CanonicalReadableDocument;
 };
 
+function canUseLoadedCollabFallbackForMutation(
+  slug: string,
+  doc: NonNullable<ReturnType<typeof getCanonicalReadableDocument>>,
+): boolean {
+  return (doc as { read_source?: string }).read_source === 'yjs_fallback'
+    && getLoadedCollabMarkdown(slug) !== null;
+}
+
 function getCanonicalReadableDocument(slug: string) {
   return getCanonicalReadableDocumentSync(slug, 'state') ?? getDocumentBySlug(slug);
 }
@@ -61,6 +70,7 @@ function getCanonicalReadableDocument(slug: string) {
 function getMutationReadyDocument(
   slug: string,
   context?: AsyncDocumentMutationContext,
+  options?: { allowLoadedCollabFallback?: boolean },
 ):
   | { doc: NonNullable<ReturnType<typeof getCanonicalReadableDocument>>; error: null }
   | { doc: null; error: EngineExecutionResult } {
@@ -68,7 +78,13 @@ function getMutationReadyDocument(
   if (!doc) {
     return { doc: null, error: { status: 404, body: { success: false, error: 'Document not found' } } };
   }
-  if (!isCanonicalReadMutationReady(doc)) {
+  if (
+    !isCanonicalReadMutationReady(doc)
+    && !(
+      options?.allowLoadedCollabFallback === true
+      && canUseLoadedCollabFallbackForMutation(slug, doc)
+    )
+  ) {
     return { doc: null, error: projectionStaleMutationResult() };
   }
   return { doc, error: null };
@@ -1161,7 +1177,7 @@ async function updateSuggestionStatusAsync(
   status: 'accepted' | 'rejected',
   context?: AsyncDocumentMutationContext,
 ): Promise<EngineExecutionResult> {
-  const ready = getMutationReadyDocument(slug, context);
+  const ready = getMutationReadyDocument(slug, context, { allowLoadedCollabFallback: true });
   if (ready.error) return ready.error;
   const doc = ready.doc;
   const markId = typeof body.markId === 'string' ? body.markId : '';

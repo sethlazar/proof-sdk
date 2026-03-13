@@ -817,6 +817,8 @@ export interface ProofEditor {
   toggleTrackChangesViewMode(): SuggestionDisplayMode;
   acceptSuggestion(id: string): boolean;
   rejectSuggestion(id: string): boolean;
+  markAcceptPersisted(markId: string): Promise<boolean>;
+  markRejectPersisted(markId: string): Promise<boolean>;
   acceptAllSuggestions(): number;
   rejectAllSuggestions(): number;
 
@@ -880,6 +882,8 @@ export interface ProofEditor {
   markModifySuggestion(markId: string, content: string): boolean;
   markAccept(markId: string): boolean;
   markReject(markId: string): boolean;
+  markAcceptPersisted(markId: string): Promise<boolean>;
+  markRejectPersisted(markId: string): Promise<boolean>;
   markAcceptAll(): number;
   markRejectAll(): number;
 
@@ -8761,6 +8765,105 @@ class ProofEditorImpl implements ProofEditor {
       }
     });
     return success;
+  }
+
+  async markAcceptPersisted(markId: string): Promise<boolean> {
+    if (!this.editor) {
+      console.warn('[markAcceptPersisted] Editor not initialized');
+      return false;
+    }
+    if (!this.isShareMode) {
+      return this.markAccept(markId);
+    }
+
+    const actor = getCurrentActor();
+    const result = await shareClient.acceptSuggestion(markId, actor);
+    if (!result || 'error' in result || result.success !== true) {
+      console.error('[markAcceptPersisted] Failed to persist suggestion acceptance via share mutation:', result);
+      return false;
+    }
+
+    const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
+      ? result.marks as Record<string, StoredMark>
+      : null;
+
+    if (serverMarks) {
+      this.lastReceivedServerMarks = { ...serverMarks };
+      this.initialMarksSynced = true;
+    }
+
+    let success = false;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const parser = ctx.get(parserCtx);
+      if (this.isShareMode) this.suppressMarksSync = true;
+      try {
+        success = acceptMark(view, markId, parser);
+      } finally {
+        if (this.isShareMode) this.suppressMarksSync = false;
+      }
+
+      if (serverMarks) {
+        applyRemoteMarks(view, serverMarks, { hydrateAnchors: this.collabCanEdit });
+      }
+
+      if (success) {
+        console.log('[markAcceptPersisted] Accepted:', success);
+        captureEvent('suggestion_accepted', { count: 1 });
+        const stats = getAuthorshipStats(view);
+        this.notifyAuthorshipStatsUpdated(stats);
+      }
+    });
+
+    return success || Boolean(serverMarks);
+  }
+
+  async markRejectPersisted(markId: string): Promise<boolean> {
+    if (!this.editor) {
+      console.warn('[markRejectPersisted] Editor not initialized');
+      return false;
+    }
+    if (!this.isShareMode) {
+      return this.markReject(markId);
+    }
+
+    const actor = getCurrentActor();
+    const result = await shareClient.rejectSuggestion(markId, actor);
+    if (!result || 'error' in result || result.success !== true) {
+      console.error('[markRejectPersisted] Failed to persist suggestion rejection via share mutation:', result);
+      return false;
+    }
+
+    const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
+      ? result.marks as Record<string, StoredMark>
+      : null;
+
+    if (serverMarks) {
+      this.lastReceivedServerMarks = { ...serverMarks };
+      this.initialMarksSynced = true;
+    }
+
+    let success = false;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      if (this.isShareMode) this.suppressMarksSync = true;
+      try {
+        success = rejectMark(view, markId);
+      } finally {
+        if (this.isShareMode) this.suppressMarksSync = false;
+      }
+
+      if (serverMarks) {
+        applyRemoteMarks(view, serverMarks, { hydrateAnchors: this.collabCanEdit });
+      }
+
+      if (success) {
+        console.log('[markRejectPersisted] Rejected:', success);
+        captureEvent('suggestion_rejected', { count: 1 });
+      }
+    });
+
+    return success || Boolean(serverMarks);
   }
 
   /**

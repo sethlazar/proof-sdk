@@ -45,7 +45,9 @@ function run(): void {
       && keybindingsSource.includes("'Mod-Alt-r': rejectActiveSuggestionCommand")
       && keybindingsSource.includes("'Mod-Alt-]': navigateNextSuggestionCommand")
       && keybindingsSource.includes("'Mod-Alt-[': navigatePrevSuggestionCommand")
-      && keybindingsSource.includes("'Mod-Shift-e': toggleSuggestionsCommand"),
+      && keybindingsSource.includes("'Mod-Shift-e': toggleSuggestionsCommand")
+      && keybindingsSource.includes('void proof.markAcceptPersisted(activeId);')
+      && keybindingsSource.includes('void proof.markRejectPersisted(activeId);'),
     'Expected dedicated keyboard shortcuts for accepting, rejecting, navigating, and toggling suggestions',
   );
   assert(
@@ -77,6 +79,8 @@ function run(): void {
       && popoverSource.includes('REVIEW_ACTION_MAX_RETRIES')
       && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId);")
       && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId);")
+      && popoverSource.includes('const persistedAction = action === \'accept\'')
+      && popoverSource.includes('setReviewButtonsBusy(true);')
       && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
       && popoverSource.includes('openForMark('),
@@ -122,6 +126,22 @@ function run(): void {
       && markAcceptBlock.includes('void shareClient.acceptSuggestion(markId, actor).then((result) => {')
       && markAcceptBlock.includes("console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);"),
     'Expected markAccept to apply locally first in share mode and then persist through the share mutation route',
+  );
+
+  const markAcceptPersistedBlock = sliceBetween(editorSource, '  async markAcceptPersisted(markId: string): Promise<boolean> {', '\n  async markRejectPersisted(');
+  assert(
+    markAcceptPersistedBlock.includes('const result = await shareClient.acceptSuggestion(markId, actor);')
+      && markAcceptPersistedBlock.includes('success = acceptMark(view, markId, parser);')
+      && markAcceptPersistedBlock.includes('applyRemoteMarks(view, serverMarks, { hydrateAnchors: this.collabCanEdit });'),
+    'Expected markAcceptPersisted to persist before reconciling local share-mode UI',
+  );
+
+  const markRejectPersistedBlock = sliceBetween(editorSource, '  async markRejectPersisted(markId: string): Promise<boolean> {', '\n  /**\n   * Accept all pending suggestions\n   */');
+  assert(
+    markRejectPersistedBlock.includes('const result = await shareClient.rejectSuggestion(markId, actor);')
+      && markRejectPersistedBlock.includes('success = rejectMark(view, markId);')
+      && markRejectPersistedBlock.includes('applyRemoteMarks(view, serverMarks, { hydrateAnchors: this.collabCanEdit });'),
+    'Expected markRejectPersisted to persist before reconciling local share-mode UI',
   );
 
   const navigateNextSuggestionBlock = sliceBetween(editorSource, '  navigateToNextSuggestion(): string | null {', '\n  /**\n   * Navigate to the previous pending suggestion\n   */');

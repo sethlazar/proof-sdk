@@ -38,11 +38,12 @@ async function run(): Promise<void> {
   process.env.AGENT_EDIT_V2_ENABLED = '1';
   delete process.env.PROOF_DB_ENV_INIT;
 
-  const [{ apiRoutes }, { agentRoutes }, { shareWebRoutes }, db] = await Promise.all([
+  const [{ apiRoutes }, { agentRoutes }, { shareWebRoutes }, db, collab] = await Promise.all([
     import('../../server/routes.js'),
     import('../../server/agent-routes.js'),
     import('../../server/share-web-routes.js'),
     import('../../server/db.js'),
+    import('../../server/collab.js'),
   ]);
 
   const app = express();
@@ -144,7 +145,6 @@ async function run(): Promise<void> {
     assert(state.warning?.code === 'PROJECTION_STALE', `Expected PROJECTION_STALE warning, got ${String(state.warning?.code)}`);
     assert(state.marks?.[commentId]?.kind === 'comment', 'Expected fallback read to preserve DB comment mark');
     assert(!state._links?.editV2, 'Expected /state fallback to withhold editV2 link');
-    assert(!state._links?.ops, 'Expected /state fallback to withhold ops link');
     assert(!(state.agent && 'editV2Api' in state.agent), 'Expected /state fallback to withhold agent.editV2Api');
 
     const snapshotRes = await fetch(`${httpBase}/api/agent/${created.slug}/snapshot`, {
@@ -273,8 +273,123 @@ async function run(): Promise<void> {
     assert(shareBody.mutationReady === false, 'Expected share mutationReady=false during fallback reads');
     assert(shareBody.warning?.code === 'PROJECTION_STALE', `Expected share PROJECTION_STALE warning, got ${String(shareBody.warning?.code)}`);
     assert(!shareBody._links?.editV2, 'Expected share fallback to withhold editV2 link');
-    assert(!shareBody._links?.ops, 'Expected share fallback to withhold ops link');
     assert(!(shareBody.agent && 'editV2Api' in shareBody.agent), 'Expected share fallback to withhold agent.editV2Api');
+
+    const createSuggestionFixture = async (
+      title: string,
+      markId: string,
+    ): Promise<{ slug: string; ownerSecret: string; markId: string }> => {
+      const slug = Math.random().toString(36).slice(2, 10);
+      const ownerSecret = `owner-${slug}`;
+      const liveReplaceMark = {
+        kind: 'replace',
+        by: 'qa:canonical-read',
+        createdAt: '2026-03-07T00:00:00.000Z',
+        quote: 'delta',
+        content: 'delta',
+        originalQuote: 'beta',
+        status: 'pending',
+        startRel: 'char:6',
+        endRel: 'char:11',
+        range: { from: 7, to: 12 },
+      };
+      db.createDocument(
+        slug,
+        `Alpha <span data-proof="suggestion" data-id="${markId}" data-by="qa:canonical-read" data-kind="replace">delta</span> gamma.`,
+        {
+          [markId]: liveReplaceMark,
+        },
+        title,
+        undefined,
+        ownerSecret,
+      );
+
+      const suggestionYDoc = new Y.Doc();
+      suggestionYDoc.getText('markdown').insert(0, 'Alpha delta gamma.');
+      suggestionYDoc.getMap('marks').set(markId, liveReplaceMark);
+      db.saveYSnapshot(slug, 1, Y.encodeStateAsUpdate(suggestionYDoc));
+      db.getDb().prepare(`
+        UPDATE documents
+        SET y_state_version = 1
+        WHERE slug = ?
+      `).run(slug);
+
+      return { slug, ownerSecret, markId };
+    };
+
+    const acceptFixture = await createSuggestionFixture('canonical read accept fallback', 'replace-live-fallback-accept');
+    const acceptBlockedRes = await fetch(`${httpBase}/api/agent/${acceptFixture.slug}/marks/accept`, {
+      method: 'POST',
+      headers: {
+        ...CLIENT_HEADERS,
+        'Content-Type': 'application/json',
+        'x-share-token': acceptFixture.ownerSecret,
+      },
+      body: JSON.stringify({
+        by: 'qa:canonical-read',
+        markId: acceptFixture.markId,
+      }),
+    });
+    assert(acceptBlockedRes.status === 409, `Expected accept to block before live collab is loaded, got ${acceptBlockedRes.status}`);
+    const acceptBlockedBody = JSON.parse(await acceptBlockedRes.text()) as { code?: string };
+    assert(acceptBlockedBody.code === 'PROJECTION_STALE', `Expected PROJECTION_STALE before live collab load, got ${String(acceptBlockedBody.code)}`);
+
+    const loadedAcceptDoc = await collab.loadCanonicalYDoc(acceptFixture.slug);
+    assert(loadedAcceptDoc, 'Expected accept fixture canonical Yjs doc to load');
+    const acceptRow = db.getDocumentBySlug(acceptFixture.slug);
+    assert(acceptRow, 'Expected accept fixture row to exist');
+    collab.registerCanonicalYDocPersistence(acceptFixture.slug, loadedAcceptDoc.ydoc, {
+      updatedAt: acceptRow.updated_at,
+      yStateVersion: acceptRow.y_state_version,
+      accessEpoch: acceptRow.access_epoch,
+    });
+
+    const acceptAllowedRes = await fetch(`${httpBase}/api/agent/${acceptFixture.slug}/marks/accept`, {
+      method: 'POST',
+      headers: {
+        ...CLIENT_HEADERS,
+        'Content-Type': 'application/json',
+        'x-share-token': acceptFixture.ownerSecret,
+      },
+      body: JSON.stringify({
+        by: 'qa:canonical-read',
+        markId: acceptFixture.markId,
+      }),
+    });
+    assert(acceptAllowedRes.status === 200, `Expected accept to succeed with loaded live collab doc, got ${acceptAllowedRes.status}`);
+    const acceptedDoc = db.getDocumentBySlug(acceptFixture.slug);
+    assert(acceptedDoc?.markdown.includes('Alpha delta gamma.'), 'Expected accept to persist the replacement through live fallback');
+    const acceptedMarks = JSON.parse(acceptedDoc?.marks ?? '{}') as Record<string, { status?: string }>;
+    assert(acceptedMarks[acceptFixture.markId]?.status !== 'pending', 'Expected accept to clear the pending suggestion mark state');
+
+    const rejectFixture = await createSuggestionFixture('canonical read reject fallback', 'replace-live-fallback-reject');
+    const loadedRejectDoc = await collab.loadCanonicalYDoc(rejectFixture.slug);
+    assert(loadedRejectDoc, 'Expected reject fixture canonical Yjs doc to load');
+    const rejectRow = db.getDocumentBySlug(rejectFixture.slug);
+    assert(rejectRow, 'Expected reject fixture row to exist');
+    collab.registerCanonicalYDocPersistence(rejectFixture.slug, loadedRejectDoc.ydoc, {
+      updatedAt: rejectRow.updated_at,
+      yStateVersion: rejectRow.y_state_version,
+      accessEpoch: rejectRow.access_epoch,
+    });
+
+    const rejectAllowedRes = await fetch(`${httpBase}/api/agent/${rejectFixture.slug}/marks/reject`, {
+      method: 'POST',
+      headers: {
+        ...CLIENT_HEADERS,
+        'Content-Type': 'application/json',
+        'x-share-token': rejectFixture.ownerSecret,
+      },
+      body: JSON.stringify({
+        by: 'qa:canonical-read',
+        markId: rejectFixture.markId,
+      }),
+    });
+    assert(rejectAllowedRes.status === 200, `Expected reject to succeed with loaded live collab doc, got ${rejectAllowedRes.status}`);
+    const rejectedDoc = db.getDocumentBySlug(rejectFixture.slug);
+    assert(rejectedDoc?.markdown.includes('Alpha beta gamma.'), 'Expected reject to preserve the original text through live fallback');
+    const rejectedMarks = JSON.parse(rejectedDoc?.marks ?? '{}') as Record<string, { status?: string }>;
+    assert(rejectedMarks[rejectFixture.markId]?.status !== 'pending', 'Expected reject to clear the pending suggestion mark state');
 
     const projectionAfterReads = db.getDocumentProjectionBySlug(created.slug);
     assert(projectionAfterReads?.y_state_version === 0, `Expected reads to avoid mutating stale projection y_state_version, got ${String(projectionAfterReads?.y_state_version)}`);

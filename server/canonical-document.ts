@@ -374,6 +374,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
 
   const sanitizedMarkdown = stripEphemeralCollabSpans(args.nextMarkdown ?? '');
   const nextMarks = args.nextMarks ?? {};
+  const hasExplicitNextMarks = args.nextMarks !== undefined;
   const activeCollabClients = getActiveCollabClientCount(args.slug);
   const liveRequired = args.strictLiveDoc !== false && activeCollabClients > 0;
   const shouldBumpAccessEpoch = getCollabRuntime().enabled
@@ -412,7 +413,7 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
     authoritativeMarkdown = stripEphemeralCollabSpans(derivedCurrent.markdown);
     authoritativeMarks = stripAuthoredMarks(derivedCurrent.marks);
   }
-  const nextMarksBase = Object.keys(nextMarks).length > 0 ? nextMarks : authoritativeMarks;
+  const nextMarksBase = hasExplicitNextMarks ? nextMarks : authoritativeMarks;
   const authoredMarks = extractAuthoredMarksFromDoc(parsedNext.doc as ProseMirrorNode, parser.schema as Schema);
   const effectiveNextMarks = synchronizeAuthoredMarks(nextMarksBase, authoredMarks);
 

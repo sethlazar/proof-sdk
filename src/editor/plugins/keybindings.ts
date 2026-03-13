@@ -277,6 +277,10 @@ function acceptActiveSuggestionCommand(
   }
 
   const proof = getProofEditorApi();
+  if (proof?.markAcceptPersisted) {
+    void proof.markAcceptPersisted(activeId);
+    return true;
+  }
   if (proof?.markAccept) {
     return proof.markAccept(activeId);
   }
@@ -297,6 +301,10 @@ function rejectActiveSuggestionCommand(
   }
 
   const proof = getProofEditorApi();
+  if (proof?.markRejectPersisted) {
+    void proof.markRejectPersisted(activeId);
+    return true;
+  }
   if (proof?.markReject) {
     return proof.markReject(activeId);
   }
