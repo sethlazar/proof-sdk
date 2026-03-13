@@ -493,6 +493,115 @@ async function run(): Promise<void> {
       'Expected accept to backfill authored metadata from serialized markdown during structured rehydration',
     );
 
+    const authoredGapSlug = `authored-gap-${Math.random().toString(36).slice(2, 10)}`;
+    const authoredGapQuote = 'beta';
+    const authoredGapBase = 'Alpha beta gamma';
+    const authoredGapAnchors = buildRelativeAnchors(authoredGapBase, authoredGapQuote);
+    const authoredGapSuggestionId = 'authored-gap-suggestion';
+    const authoredGapAuthoredId = 'authored-gap-authored';
+    db.createDocument(
+      authoredGapSlug,
+      `Alpha <span data-proof="suggestion" data-id="${authoredGapSuggestionId}" data-by="ai:test" data-kind="delete">${authoredGapQuote}</span> gamma`,
+      canonicalizeStoredMarks({
+        [authoredGapSuggestionId]: {
+          kind: 'delete',
+          by: 'ai:test',
+          createdAt,
+          quote: authoredGapQuote,
+          status: 'pending',
+          startRel: authoredGapAnchors.startRel,
+          endRel: authoredGapAnchors.endRel,
+          range: authoredGapAnchors.range,
+        } satisfies StoredMark,
+        [authoredGapAuthoredId]: {
+          kind: 'authored',
+          by: 'human:dan',
+          createdAt,
+          quote: 'ghost authored text',
+          startRel: 'char:999',
+          endRel: 'char:1017',
+          range: { from: 999, to: 1017 },
+        } satisfies StoredMark,
+      }),
+      'Accept should ignore unrelated authored hydration gaps',
+    );
+
+    const authoredGapAccept = await executeDocumentOperationAsync(authoredGapSlug, 'POST', '/marks/accept', {
+      markId: authoredGapSuggestionId,
+      by: 'human:test',
+    });
+    assertEqual(
+      authoredGapAccept.status,
+      200,
+      `Expected accept to ignore unrelated authored hydration gaps, got ${authoredGapAccept.status}`,
+    );
+    const authoredGapDoc = db.getDocumentBySlug(authoredGapSlug);
+    assert(
+      !(authoredGapDoc?.markdown ?? '').includes('data-proof="suggestion"'),
+      'Expected authored hydration gaps not to block removing the accepted suggestion wrapper',
+    );
+
+    const unrelatedSuggestionGapSlug = `suggestion-gap-${Math.random().toString(36).slice(2, 10)}`;
+    const unrelatedSuggestionGapQuote = 'beta';
+    const unrelatedSuggestionGapBase = 'Alpha beta gamma';
+    const unrelatedSuggestionGapAnchors = buildRelativeAnchors(unrelatedSuggestionGapBase, unrelatedSuggestionGapQuote);
+    const unrelatedSuggestionGapSuggestionId = 'suggestion-gap-target';
+    const unrelatedPendingSuggestionId = 'suggestion-gap-missing-insert';
+    db.createDocument(
+      unrelatedSuggestionGapSlug,
+      `Alpha <span data-proof="suggestion" data-id="${unrelatedSuggestionGapSuggestionId}" data-by="ai:test" data-kind="delete">${unrelatedSuggestionGapQuote}</span> gamma`,
+      canonicalizeStoredMarks({
+        [unrelatedSuggestionGapSuggestionId]: {
+          kind: 'delete',
+          by: 'ai:test',
+          createdAt,
+          quote: unrelatedSuggestionGapQuote,
+          status: 'pending',
+          startRel: unrelatedSuggestionGapAnchors.startRel,
+          endRel: unrelatedSuggestionGapAnchors.endRel,
+          range: unrelatedSuggestionGapAnchors.range,
+        } satisfies StoredMark,
+        [unrelatedPendingSuggestionId]: {
+          kind: 'insert',
+          by: 'human:dan',
+          createdAt,
+          quote: 'Detached pending insertion',
+          content: 'Detached pending insertion',
+          status: 'pending',
+          startRel: 'char:999',
+          endRel: 'char:1024',
+          range: { from: 999, to: 1024 },
+        } satisfies StoredMark,
+      }),
+      'Accept should preserve unrelated pending suggestion hydration gaps',
+    );
+
+    const unrelatedSuggestionGapAccept = await executeDocumentOperationAsync(unrelatedSuggestionGapSlug, 'POST', '/marks/accept', {
+      markId: unrelatedSuggestionGapSuggestionId,
+      by: 'human:test',
+    });
+    assertEqual(
+      unrelatedSuggestionGapAccept.status,
+      200,
+      `Expected accept to preserve unrelated pending suggestion hydration gaps, got ${unrelatedSuggestionGapAccept.status}`,
+    );
+    const unrelatedSuggestionGapDoc = db.getDocumentBySlug(unrelatedSuggestionGapSlug);
+    assertEqual(
+      stripAllProofSpanTags(unrelatedSuggestionGapDoc?.markdown ?? '').replace(/\s+/g, ' ').trim(),
+      'Alpha gamma',
+      'Expected unrelated pending suggestion hydration gaps not to block the accepted deletion',
+    );
+    const unrelatedSuggestionGapMarks = parseStoredMarks(unrelatedSuggestionGapDoc?.marks ?? '');
+    assert(
+      unrelatedPendingSuggestionId in unrelatedSuggestionGapMarks,
+      'Expected accept to preserve unrelated pending suggestion metadata even when it could not be rehydrated',
+    );
+    assertEqual(
+      unrelatedSuggestionGapMarks[unrelatedPendingSuggestionId]?.status,
+      'pending',
+      'Expected preserved unrelated suggestion metadata to remain pending after accepting a different suggestion',
+    );
+
     const authoredBeforeText = 'Lead authored text.';
     const authoredAfterText = 'Tail authored text.';
     const authoredQuote = 'Middle legacy quote that should stay anchored.';

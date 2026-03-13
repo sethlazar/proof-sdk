@@ -3116,11 +3116,11 @@ const STYLES = {
   comment_resolved: 'background-color: rgba(156, 163, 175, 0.15); border-bottom: 1px dashed #9CA3AF;',
   compose_anchor: 'background-color: rgba(252, 211, 77, 0.22); border-bottom: 2px dashed #F59E0B;',
 
-  insert: 'background-color: rgba(34, 197, 94, 0.25); border-bottom: 2px solid #22C55E;',
+  insert: 'color: #15803d; font-weight: 500;',
   insert_simple: 'color: #15803d; font-weight: 500;',
-  delete: 'background-color: rgba(239, 68, 68, 0.2); text-decoration: line-through; color: #666;',
-  hidden_source: 'display:inline-block;width:0;max-width:0;overflow:hidden;white-space:nowrap;opacity:0;text-decoration:none;background:transparent;border:none;padding:0;margin:0;pointer-events:none;vertical-align:baseline;',
-  change_indicator: 'display:inline-block;width:8px;height:1.05em;margin:0 1px;vertical-align:text-bottom;border-left:2px solid #ef4444;border-radius:999px;background:rgba(239, 68, 68, 0.08);cursor:pointer;',
+  delete: 'color: #b91c1c; text-decoration: line-through; text-decoration-color: #b91c1c;',
+  hidden_source: 'display:none;color:transparent;text-decoration:none;background:transparent;border:none;padding:0;margin:0;pointer-events:none;',
+  change_indicator: 'display:inline-flex;width:10px;height:10px;margin:0 3px;vertical-align:middle;border-radius:999px;background:#fca5a5;box-shadow:0 0 0 1px rgba(185, 28, 28, 0.35);cursor:pointer;transform:translateY(-0.02em);',
 };
 
 function normalizeComposeAnchorRange(range: MarkRange | null, doc: ProseMirrorNode): MarkRange | null {
@@ -3225,10 +3225,6 @@ function createDecorations(
           if (suggestionDisplayMode === 'simple') {
             style = STYLES.insert_simple;
             cssClass = 'mark-insert mark-simple mark-accepted-view';
-            widgetPos = firstRangeFrom;
-            widgetClassName = 'mark-simple-indicator mark-simple-insert-indicator';
-            widgetStyle = STYLES.change_indicator;
-            widgetRole = 'hidden-change-indicator';
           } else if (suggestionDisplayMode === 'no-markup') {
             style = '';
             cssClass = 'mark-insert mark-no-markup mark-accepted-view';
@@ -3339,16 +3335,17 @@ function createDecorations(
       }
     }
 
-    if (style || cssClass) {
+    if (style || cssClass || hideSourceContent) {
       // Add glow class for newly-created marks (within last 2 seconds)
       const GLOW_DURATION_MS = 2000;
       const markAge = now - new Date(mark.at).getTime();
       const glowClass = markAge < GLOW_DURATION_MS ? 'proof-mark-new' : '';
 
       for (const { from, to } of ranges) {
+        const className = [cssClass, glowClass].filter(Boolean).join(' ');
         decorations.push(
           Decoration.inline(from, to, {
-            class: [cssClass, glowClass].filter(Boolean).join(' '),
+            class: className,
             style,
             'data-mark-id': mark.id,
             'data-mark-kind': mark.kind,
@@ -3357,7 +3354,7 @@ function createDecorations(
             markKind: mark.kind,
             renderMode: suggestionDisplayMode,
             decorationRole: hideSourceContent ? 'hidden-source' : 'inline-mark',
-            className: [cssClass, glowClass].filter(Boolean).join(' '),
+            className,
             style,
           })
         );
@@ -3456,8 +3453,8 @@ function injectGlowStyles(): void {
   style.textContent = `
     /* Glow animation for newly-created suggestion marks */
     @keyframes proof-change-glow {
-      0% { box-shadow: 0 0 8px rgba(34, 197, 94, 0.6); background-color: rgba(34, 197, 94, 0.4); }
-      100% { box-shadow: none; background-color: rgba(34, 197, 94, 0.25); }
+      0% { text-shadow: 0 0 8px rgba(34, 197, 94, 0.45); }
+      100% { text-shadow: none; }
     }
     .proof-mark-new { animation: proof-change-glow 2s ease-out forwards; }
 

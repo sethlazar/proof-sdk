@@ -4152,6 +4152,85 @@ test('setSuggestionDisplayMode updates plugin state', () => {
   assertEqual(getSuggestionDisplayMode(state), 'simple', 'Expected display mode to update in plugin state');
 });
 
+test('simple markup keeps insertions as green text without highlight widgets', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+    },
+    marks: {
+      proofSuggestion: {
+        attrs: {
+          id: { default: null },
+          kind: { default: 'insert' },
+          by: { default: 'unknown' },
+          status: { default: 'pending' },
+          content: { default: null },
+          createdAt: { default: null },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+    },
+  });
+
+  const markId = 'insert-simple-markup';
+  const insertMark = schema.marks.proofSuggestion.create({ id: markId, kind: 'insert', by: 'human:seth' });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema,
+    doc: schema.node('doc', null, [
+      schema.node('paragraph', null, [schema.text('Before '), schema.text('added text', [insertMark]), schema.text(' after')]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'insert',
+        by: 'human:seth',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        content: 'added text',
+        status: 'pending',
+      },
+    },
+  }));
+
+  const summaries = __debugDescribeDecorations(state, getMarks(state), null, null, 'simple');
+  assert(
+    summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'inline-mark'
+      && summary.style.includes('color: #15803d')
+      && !summary.style.includes('background-color')
+    ),
+    'Expected simple markup insertions to render as green text without background highlighting',
+  );
+  assert(
+    !summaries.some((summary) =>
+      summary.markId === markId
+      && summary.decorationRole === 'hidden-change-indicator'
+    ),
+    'Expected simple markup insertions to stay readable without an extra change indicator widget',
+  );
+});
+
 test('simple markup replaces source text with preview widget for pending replacements', () => {
   const schema = new Schema({
     nodes: {

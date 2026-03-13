@@ -148,7 +148,13 @@ import {
 import { syncAgentSessions } from '../analytics/agent-sessions';
 import { initThemePicker, getThemePicker } from '../ui/theme-picker';
 import { fileClient } from '../bridge/file-client';
-import { shareClient, type CollabSessionInfo, type SharePendingEvent } from '../bridge/share-client';
+import {
+  shareClient,
+  type CollabSessionInfo,
+  type SharePendingEvent,
+  type ShareMarkMutationResponse,
+  type ShareRequestError,
+} from '../bridge/share-client';
 import { collabClient, type CollabSyncStatus } from '../bridge/collab-client';
 import { collabCursorBuilder, collabSelectionBuilder } from './plugins/collab-cursors';
 import { isAgentScopedId } from '../shared/agent-identity';
@@ -8777,6 +8783,131 @@ class ProofEditorImpl implements ProofEditor {
     return success;
   }
 
+  private isMissingShareSuggestionMetadataError(
+    result: ShareMarkMutationResponse | ShareRequestError | null,
+  ): result is ShareRequestError {
+    return Boolean(
+      result
+      && 'error' in result
+      && result.error.status === 404
+      && /mark not found/i.test(result.error.message),
+    );
+  }
+
+  private getShareSuggestionBackfillPlan(
+    markId: string,
+    result: ShareMarkMutationResponse | ShareRequestError | null,
+  ): { markIds: string[] | null } | null {
+    if (!result || !('error' in result)) return null;
+
+    if (this.isMissingShareSuggestionMetadataError(result)) {
+      return { markIds: [markId] };
+    }
+
+    if (
+      result.error.status === 409
+      && (result.error.code === 'MARK_REHYDRATION_INCOMPLETE' || result.error.code === 'MARK_NOT_HYDRATED')
+    ) {
+      const missingMarkIds = Array.isArray(result.error.missingMarkIds)
+        ? result.error.missingMarkIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+        : [];
+      return { markIds: missingMarkIds.length > 0 ? missingMarkIds : null };
+    }
+
+    return null;
+  }
+
+  private async backfillMissingShareSuggestionMetadata(
+    plan: { markIds: string[] | null },
+    actor: string,
+  ): Promise<boolean> {
+    if (!this.editor || !this.isShareMode) return false;
+
+    let metadata: Record<string, unknown> | null = null;
+    let projectionMarkdown: string | null = null;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const localMetadata = getMarkMetadataWithQuotes(view.state);
+      const entries = Object.entries(localMetadata).filter(([localMarkId, value]) => {
+        if (!value || typeof value !== 'object') return false;
+        const kind = (value as { kind?: unknown }).kind;
+        if (kind !== 'insert' && kind !== 'delete' && kind !== 'replace') return false;
+        if (plan.markIds === null) return true;
+        return plan.markIds.includes(localMarkId);
+      });
+      metadata = entries.length > 0 ? Object.fromEntries(entries) : null;
+      if (entries.length > 0 && this.collabEnabled && this.collabCanEdit) {
+        const serializer = ctx.get(serializerCtx);
+        projectionMarkdown = this.normalizeMarkdownForRuntime(serializer(view.state.doc));
+      }
+    });
+
+    if (!metadata) return false;
+    const markIds = Object.keys(metadata);
+    if (markIds.length === 0) return false;
+
+    let synced = false;
+    if (this.collabEnabled && this.collabCanEdit && this.editor) {
+      this.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        if (projectionMarkdown) {
+          this.publishProjectionMarkdown(view, projectionMarkdown, 'review-backfill');
+        }
+        collabClient.setMarksMetadata(metadata as Record<string, StoredMark>);
+      });
+      synced = await this.waitForShareSuggestionMetadata(markIds);
+    }
+
+    if (!synced) {
+      const pushed = await shareClient.pushMarks(metadata, actor);
+      if (!pushed) return false;
+      synced = await this.waitForShareSuggestionMetadata(markIds);
+    }
+
+    if (!synced) return false;
+
+    this.lastReceivedServerMarks = mergePendingServerMarks(
+      this.lastReceivedServerMarks,
+      metadata as Record<string, StoredMark>,
+    );
+    this.initialMarksSynced = true;
+    return true;
+  }
+
+  private async waitForShareSuggestionMetadata(markIds: string[], timeoutMs = 1500): Promise<boolean> {
+    if (markIds.length === 0) return false;
+    const slug = shareClient.getSlug();
+    if (!slug) return false;
+
+    const deadline = Date.now() + timeoutMs;
+    const stateUrl = new URL(`/api/agent/${encodeURIComponent(slug)}/state`, window.location.origin).toString();
+
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(stateUrl, {
+          method: 'GET',
+          headers: shareClient.getShareAuthHeaders(),
+        });
+        if (response.ok) {
+          const payload = await response.json().catch(() => null) as { marks?: unknown } | null;
+          const marks = (
+            payload?.marks
+            && typeof payload.marks === 'object'
+            && !Array.isArray(payload.marks)
+          ) ? payload.marks as Record<string, unknown> : null;
+          if (marks && markIds.every((markId) => Object.prototype.hasOwnProperty.call(marks, markId))) {
+            return true;
+          }
+        }
+      } catch {
+        // Best effort retry until the timeout elapses.
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
+    }
+
+    return false;
+  }
+
   async markAcceptPersisted(markId: string): Promise<boolean> {
     if (!this.editor) {
       console.warn('[markAcceptPersisted] Editor not initialized');
@@ -8788,13 +8919,18 @@ class ProofEditorImpl implements ProofEditor {
 
     const actor = getCurrentActor();
     const result = await shareClient.acceptSuggestion(markId, actor);
-    if (!result || 'error' in result || result.success !== true) {
-      console.error('[markAcceptPersisted] Failed to persist suggestion acceptance via share mutation:', result);
+    const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);
+    const effectiveResult = backfillPlan
+      && await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)
+      ? await shareClient.acceptSuggestion(markId, actor)
+      : result;
+    if (!effectiveResult || 'error' in effectiveResult || effectiveResult.success !== true) {
+      console.error('[markAcceptPersisted] Failed to persist suggestion acceptance via share mutation:', effectiveResult);
       return false;
     }
 
-    const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-      ? result.marks as Record<string, StoredMark>
+    const serverMarks = (effectiveResult.marks && typeof effectiveResult.marks === 'object' && !Array.isArray(effectiveResult.marks))
+      ? effectiveResult.marks as Record<string, StoredMark>
       : null;
 
     if (serverMarks) {
@@ -8839,13 +8975,18 @@ class ProofEditorImpl implements ProofEditor {
 
     const actor = getCurrentActor();
     const result = await shareClient.rejectSuggestion(markId, actor);
-    if (!result || 'error' in result || result.success !== true) {
-      console.error('[markRejectPersisted] Failed to persist suggestion rejection via share mutation:', result);
+    const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);
+    const effectiveResult = backfillPlan
+      && await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)
+      ? await shareClient.rejectSuggestion(markId, actor)
+      : result;
+    if (!effectiveResult || 'error' in effectiveResult || effectiveResult.success !== true) {
+      console.error('[markRejectPersisted] Failed to persist suggestion rejection via share mutation:', effectiveResult);
       return false;
     }
 
-    const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-      ? result.marks as Record<string, StoredMark>
+    const serverMarks = (effectiveResult.marks && typeof effectiveResult.marks === 'object' && !Array.isArray(effectiveResult.marks))
+      ? effectiveResult.marks as Record<string, StoredMark>
       : null;
 
     if (serverMarks) {

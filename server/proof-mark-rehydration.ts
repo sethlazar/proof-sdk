@@ -237,6 +237,47 @@ function buildMissingRequiredMarkIds(requiredIds: string[], hydratedIds: string[
   return requiredIds.filter((id) => !hydrated.has(id));
 }
 
+function isAuthoredHydrationGap(id: string, marks: Record<string, StoredMark>): boolean {
+  if (id.startsWith('serialized-authored:') || id.startsWith('authored:')) return true;
+  return marks[id]?.kind === 'authored';
+}
+
+function isPendingSuggestion(mark: StoredMark | undefined): boolean {
+  return Boolean(
+    mark
+    && (mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+    && mark.status !== 'accepted'
+    && mark.status !== 'rejected'
+  );
+}
+
+function isPreservableSuggestionHydrationGap(
+  id: string,
+  marks: Record<string, StoredMark>,
+  targetMarkId: string,
+): boolean {
+  if (id === targetMarkId) return false;
+  return isPendingSuggestion(marks[id]);
+}
+
+function preserveCanonicalMarks(
+  repairedMarks: Record<string, StoredMark>,
+  canonicalMarks: Record<string, StoredMark>,
+  preservedMarkIds: string[],
+): Record<string, StoredMark> {
+  if (preservedMarkIds.length === 0) return repairedMarks;
+
+  const nextMarks: Record<string, StoredMark> = { ...repairedMarks };
+  for (const id of preservedMarkIds) {
+    if (id in nextMarks) continue;
+    const canonical = canonicalMarks[id];
+    if (!canonical) continue;
+    nextMarks[id] = { ...canonical };
+  }
+
+  return canonicalizeStoredMarks(nextMarks);
+}
+
 async function buildRehydratedState(markdown: string, marks: Record<string, StoredMark>): Promise<{
   strippedMarkdown: string;
   state: EditorState;
@@ -372,13 +413,19 @@ export async function finalizeSuggestionThroughRehydration(args: {
       rehydrated.missingRequiredIds,
     );
   }
-  if (rehydrated.missingRequiredIds.length > 0) {
+  const preservableSuggestionGapIds = rehydrated.missingRequiredIds.filter(
+    (id) => isPreservableSuggestionHydrationGap(id, canonicalMarks, args.markId),
+  );
+  const blockingMissingIds = rehydrated.missingRequiredIds.filter(
+    (id) => !isAuthoredHydrationGap(id, canonicalMarks) && !preservableSuggestionGapIds.includes(id),
+  );
+  if (blockingMissingIds.length > 0) {
     return missingMarkFailure(
       'REQUIRED_MARKS_MISSING',
       'One or more stored Proof marks could not be rehydrated safely',
       rehydrated.strippedMarkdown,
       rehydrated.hydratedIds,
-      rehydrated.missingRequiredIds,
+      blockingMissingIds,
     );
   }
 
@@ -394,6 +441,16 @@ export async function finalizeSuggestionThroughRehydration(args: {
       rehydrated.missingRequiredIds,
     );
   }
+  const finalized = await finalizeRehydratedState(rehydrated.strippedMarkdown, rehydrated.view.state);
+  const repairedMarks = preserveCanonicalMarks(finalized.marks, canonicalMarks, preservableSuggestionGapIds);
+  const missingRequiredMarkIds = buildMissingRequiredMarkIds(
+    collectRequiredHydrationIds(repairedMarks, finalized.markdown),
+    finalized.hydratedMarkIds,
+  );
 
-  return finalizeRehydratedState(rehydrated.strippedMarkdown, rehydrated.view.state);
+  return {
+    ...finalized,
+    marks: repairedMarks,
+    missingRequiredMarkIds,
+  };
 }

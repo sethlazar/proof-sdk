@@ -305,6 +305,34 @@ function isSuggestionKind(kind: string | undefined): kind is 'insert' | 'delete'
   return kind === 'insert' || kind === 'delete' || kind === 'replace';
 }
 
+function getSuggestionKindPresentation(kind: 'insert' | 'delete' | 'replace'): {
+  label: string;
+  color: string;
+  tint: string;
+} {
+  switch (kind) {
+    case 'delete':
+      return {
+        label: 'Deletion',
+        color: '#b91c1c',
+        tint: 'rgba(185, 28, 28, 0.10)',
+      };
+    case 'replace':
+      return {
+        label: 'Replacement',
+        color: '#1d4ed8',
+        tint: 'rgba(29, 78, 216, 0.10)',
+      };
+    case 'insert':
+    default:
+      return {
+        label: 'Insertion',
+        color: '#15803d',
+        tint: 'rgba(21, 128, 61, 0.10)',
+      };
+  }
+}
+
 class MarkPopoverController {
   private view: EditorView;
   private popover: HTMLDivElement;
@@ -598,11 +626,11 @@ class MarkPopoverController {
       button.dataset.markIds = item.markIds.join(',');
       button.dataset.markKind = item.kind;
 
-      const baseColor = item.kind === 'delete' ? '#ef4444' : '#15803d';
+      const { color: baseColor, tint: baseTint } = getSuggestionKindPresentation(item.kind);
       const borderColor = item.active ? '#111827' : baseColor;
       const background = item.active
         ? baseColor
-        : (item.kind === 'delete' ? 'rgba(239, 68, 68, 0.16)' : 'rgba(21, 128, 61, 0.16)');
+        : baseTint;
 
       button.style.cssText = [
         'position: absolute',
@@ -1801,38 +1829,80 @@ class MarkPopoverController {
 
   private renderSuggestion(mark: Mark): void {
     this.popover.innerHTML = '';
+    const kind = isSuggestionKind(mark.kind) ? mark.kind : 'replace';
+    const kindPresentation = getSuggestionKindPresentation(kind);
 
     const header = document.createElement('div');
     header.className = 'mark-popover-header';
-    header.textContent = 'Suggestion';
+    header.style.display = 'flex';
+    header.style.alignItems = 'center';
+    header.style.justifyContent = 'space-between';
+    header.style.gap = '12px';
+
+    const title = document.createElement('div');
+    title.textContent = 'Suggestion';
+
+    const kindBadge = document.createElement('div');
+    kindBadge.style.cssText = [
+      'display:inline-flex',
+      'align-items:center',
+      'gap:8px',
+      'padding:4px 10px',
+      'border-radius:999px',
+      `border:1px solid ${kindPresentation.color}`,
+      `background:${kindPresentation.tint}`,
+      `color:${kindPresentation.color}`,
+      'font-size:11px',
+      'font-weight:700',
+      'letter-spacing:0.02em',
+      'text-transform:uppercase',
+      'flex-shrink:0',
+    ].join(';');
+
+    const kindDot = document.createElement('span');
+    kindDot.style.cssText = [
+      'display:inline-block',
+      'width:8px',
+      'height:8px',
+      'border-radius:999px',
+      `background:${kindPresentation.color}`,
+      'flex-shrink:0',
+    ].join(';');
+    kindBadge.append(kindDot, document.createTextNode(kindPresentation.label));
+    header.append(title, kindBadge);
 
     const body = document.createElement('div');
     body.className = 'mark-popover-body';
     body.style.whiteSpace = 'normal';
 
-    const appendDetailRow = (labelText: string, valueText: string): void => {
+    const appendDetailRow = (labelText: string, valueText: string, valueColor?: string): void => {
       if (!valueText) return;
       const label = document.createElement('div');
       label.textContent = labelText;
       label.style.cssText = 'font-size:11px;font-weight:600;letter-spacing:0.02em;text-transform:uppercase;opacity:0.62;margin-top:8px;';
       const value = document.createElement('div');
       value.textContent = valueText;
-      value.style.cssText = 'white-space:pre-wrap;word-break:break-word;line-height:1.4;';
+      value.style.cssText = [
+        'white-space:pre-wrap',
+        'word-break:break-word',
+        'line-height:1.4',
+        valueColor ? `color:${valueColor}` : '',
+      ].filter(Boolean).join(';');
       body.appendChild(label);
       body.appendChild(value);
     };
 
     if (mark.kind === 'insert') {
       const data = mark.data as InsertData | undefined;
-      appendDetailRow('Inserted text', data?.content ?? '');
+      appendDetailRow('Inserted text', data?.content ?? '', '#15803d');
     } else if (mark.kind === 'replace') {
       const data = mark.data as ReplaceData | undefined;
       const current = data?.content ?? '';
       const original = typeof data?.originalQuote === 'string' ? data.originalQuote : '';
-      appendDetailRow('Original text', original);
-      appendDetailRow('Edited text', current);
+      appendDetailRow('Original text', original, '#b91c1c');
+      appendDetailRow('Edited text', current, '#15803d');
     } else if (mark.kind === 'delete') {
-      appendDetailRow('Deleted text', mark.quote ?? '');
+      appendDetailRow('Deleted text', mark.quote ?? '', '#b91c1c');
     }
 
     const actions = document.createElement('div');

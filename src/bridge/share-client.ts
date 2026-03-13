@@ -67,6 +67,7 @@ export type ShareRequestError = {
     status: number;
     code: string;
     message: string;
+    missingMarkIds?: string[];
   };
 };
 
@@ -228,18 +229,26 @@ export class ShareClient {
   }
 
   private async parseRequestError(response: Response): Promise<ShareRequestError> {
-    const body = await response.json().catch(() => ({} as { error?: unknown; code?: unknown }));
+    const body = await response.json().catch(() => ({} as {
+      error?: unknown;
+      code?: unknown;
+      missingMarkIds?: unknown;
+    }));
     const code = typeof body.code === 'string' && body.code.trim().length > 0
       ? body.code
       : 'unknown';
     const message = typeof body.error === 'string' && body.error.trim().length > 0
       ? body.error
       : response.statusText || 'Request failed';
+    const missingMarkIds = Array.isArray(body.missingMarkIds)
+      ? body.missingMarkIds.filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+      : [];
     return {
       error: {
         status: response.status,
         code,
         message,
+        ...(missingMarkIds.length > 0 ? { missingMarkIds } : {}),
       },
     };
   }

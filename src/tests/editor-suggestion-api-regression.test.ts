@@ -19,6 +19,7 @@ function run(): void {
   const popoverSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/mark-popover.ts'), 'utf8');
   const shareClientSource = readFileSync(path.resolve(process.cwd(), 'src/bridge/share-client.ts'), 'utf8');
   const agentRoutesSource = readFileSync(path.resolve(process.cwd(), 'server/agent-routes.ts'), 'utf8');
+  const markRehydrationSource = readFileSync(path.resolve(process.cwd(), 'server/proof-mark-rehydration.ts'), 'utf8');
 
   const acceptSuggestionBlock = sliceBetween(editorSource, '  acceptSuggestion(id: string): boolean {', '\n  /**');
   assert(acceptSuggestionBlock.includes('return this.markAccept(String(id));'), 'Expected acceptSuggestion to delegate to markAccept');
@@ -59,6 +60,10 @@ function run(): void {
   assert(
     popoverSource.includes("view.dom.addEventListener('mousemove', this.handleEditorMouseMove);")
       && popoverSource.includes("'desktop-side-panel'")
+      && popoverSource.includes('function getSuggestionKindPresentation(')
+      && popoverSource.includes("label: 'Insertion'")
+      && popoverSource.includes("label: 'Deletion'")
+      && popoverSource.includes("label: 'Replacement'")
       && popoverSource.includes('private getPreferredRenderMode(mode: PopoverMode): RenderMode {')
       && popoverSource.includes('positionSidePanel(')
       && popoverSource.includes("source?: 'direct' | 'hover'")
@@ -87,7 +92,7 @@ function run(): void {
       && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion review UI to support a desktop side panel, hover/direct open where appropriate, a simple-markup suggestion rail, capture-phase review key handling, retry transient review actions, and active suggestion navigation',
+    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct open where appropriate, a simple-markup suggestion rail, capture-phase review key handling, retry transient review actions, and active suggestion navigation',
   );
   assert(
     editorSource.includes("return normalized.length > 0 && normalized !== 'Saved';")
@@ -148,17 +153,33 @@ function run(): void {
   const markAcceptPersistedBlock = sliceBetween(editorSource, '  async markAcceptPersisted(markId: string): Promise<boolean> {', '\n  async markRejectPersisted(');
   assert(
     markAcceptPersistedBlock.includes('const result = await shareClient.acceptSuggestion(markId, actor);')
+      && markAcceptPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
+      && markAcceptPersistedBlock.includes('await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)')
       && markAcceptPersistedBlock.includes('success = acceptMark(view, markId, parser);')
       && markAcceptPersistedBlock.includes('applyRemoteMarks(view, serverMarks, { hydrateAnchors: this.collabCanEdit });'),
-    'Expected markAcceptPersisted to persist before reconciling local share-mode UI',
+    'Expected markAcceptPersisted to retry after hydrating missing share suggestion metadata before reconciling local share-mode UI',
   );
 
   const markRejectPersistedBlock = sliceBetween(editorSource, '  async markRejectPersisted(markId: string): Promise<boolean> {', '\n  /**\n   * Accept all pending suggestions\n   */');
   assert(
     markRejectPersistedBlock.includes('const result = await shareClient.rejectSuggestion(markId, actor);')
+      && markRejectPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
+      && markRejectPersistedBlock.includes('await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)')
       && markRejectPersistedBlock.includes('success = rejectMark(view, markId);')
       && markRejectPersistedBlock.includes('applyRemoteMarks(view, serverMarks, { hydrateAnchors: this.collabCanEdit });'),
-    'Expected markRejectPersisted to persist before reconciling local share-mode UI',
+    'Expected markRejectPersisted to retry after hydrating missing share suggestion metadata before reconciling local share-mode UI',
+  );
+  assert(
+    editorSource.includes('private getShareSuggestionBackfillPlan(')
+      && editorSource.includes("result.error.code === 'MARK_REHYDRATION_INCOMPLETE'")
+      && editorSource.includes("result.error.code === 'MARK_NOT_HYDRATED'")
+      && editorSource.includes('return { markIds: missingMarkIds.length > 0 ? missingMarkIds : null };')
+      && editorSource.includes('metadata = entries.length > 0 ? Object.fromEntries(entries) : null;')
+      && editorSource.includes("this.publishProjectionMarkdown(view, projectionMarkdown, 'review-backfill');")
+      && editorSource.includes('collabClient.setMarksMetadata(metadata as Record<string, StoredMark>);')
+      && editorSource.includes('synced = await this.waitForShareSuggestionMetadata(markIds);')
+      && editorSource.includes('private async waitForShareSuggestionMetadata(markIds: string[], timeoutMs = 1500): Promise<boolean> {'),
+    'Expected share suggestion persistence to backfill the server-reported missing pending suggestions before retrying',
   );
 
   const navigateNextSuggestionBlock = sliceBetween(editorSource, '  navigateToNextSuggestion(): string | null {', '\n  /**\n   * Navigate to the previous pending suggestion\n   */');
@@ -189,6 +210,12 @@ function run(): void {
       && shareClientSource.includes("/agent/${encodeURIComponent(this.slug)}/marks/accept"),
     'Expected ShareClient to expose a dedicated acceptSuggestion mutation',
   );
+  assert(
+    shareClientSource.includes('missingMarkIds?: string[];')
+      && shareClientSource.includes('const missingMarkIds = Array.isArray(body.missingMarkIds)')
+      && shareClientSource.includes('...(missingMarkIds.length > 0 ? { missingMarkIds } : {}),'),
+    'Expected ShareClient request errors to preserve missingMarkIds for share review retries',
+  );
 
   const acceptRouteBlock = sliceBetween(
     agentRoutesSource,
@@ -201,6 +228,13 @@ function run(): void {
       && acceptRouteBlock.includes("source: 'marks.accept'")
       && acceptRouteBlock.includes("code: 'COLLAB_SYNC_FAILED'"),
     'Expected /marks/accept to await verified collab convergence before returning success',
+  );
+  assert(
+    markRehydrationSource.includes("id.startsWith('serialized-authored:') || id.startsWith('authored:')")
+      && markRehydrationSource.includes('function isPreservableSuggestionHydrationGap(')
+      && markRehydrationSource.includes('const preservableSuggestionGapIds = rehydrated.missingRequiredIds.filter(')
+      && markRehydrationSource.includes('const repairedMarks = preserveCanonicalMarks(finalized.marks, canonicalMarks, preservableSuggestionGapIds);'),
+    'Expected structured review rehydration to ignore authored hydration-only gaps and preserve unrelated pending suggestions instead of blocking review actions',
   );
 
   console.log('✓ suggestion API actions route through share-aware accept/reject persistence');
