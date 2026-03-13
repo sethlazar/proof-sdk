@@ -1134,6 +1134,7 @@ class ProofEditorImpl implements ProofEditor {
   private shareBannerAgentSlotEl: HTMLElement | null = null;
   private shareBannerSyncDotEl: HTMLElement | null = null;
   private shareBannerSyncLabelEl: HTMLElement | null = null;
+  private shareHumanPresenceSignature: string = '';
   private shareBannerTitleEditing: boolean = false;
   private shareTitlePersistSeq: number = 0;
   private shareLastStatusLabel: string = '';
@@ -2806,24 +2807,7 @@ class ProofEditorImpl implements ProofEditor {
 
   private shouldShowStatusText(statusLabel: string): boolean {
     const normalized = statusLabel.trim() || 'Saved';
-    const now = Date.now();
-
-    if (normalized !== this.shareLastStatusLabel) {
-      this.shareLastStatusLabel = normalized;
-      this.shareStatusTextVisibleUntilMs = now + 3_500;
-      if (this.shareStatusHideTimer) {
-        clearTimeout(this.shareStatusHideTimer);
-        this.shareStatusHideTimer = null;
-      }
-      this.shareStatusHideTimer = setTimeout(() => {
-        this.shareStatusHideTimer = null;
-        const label = document.querySelector('#share-banner .share-pill-status-inline .status-label') as HTMLElement | null;
-        if (label) label.style.display = 'none';
-      }, 3_550);
-      return true;
-    }
-
-    return now < this.shareStatusTextVisibleUntilMs;
+    return normalized.length > 0 && normalized !== 'Saved';
   }
 
   private getHumanCollaboratorAvatars(): Array<{ name: string; color: string; initial: string }> {
@@ -3044,12 +3028,17 @@ class ProofEditorImpl implements ProofEditor {
         align-items:center;
         gap:6px;
         flex-shrink:0;
+        min-width:78px;
+        justify-content:flex-start;
       }
       #share-banner .share-pill-status-inline .status-label {
         color:#6b7280;
         font-size:11px;
         font-weight:500;
         line-height:1;
+        display:inline-block;
+        min-width:52px;
+        transition:opacity 0.18s ease, visibility 0.18s ease;
       }
       #share-banner .share-pill-status-sep {
         width:1px;
@@ -3151,6 +3140,17 @@ class ProofEditorImpl implements ProofEditor {
     const container = this.shareBannerAvatarsEl;
     if (!container) return;
     const avatars = this.getHumanCollaboratorAvatars();
+    const signature = avatars.map((avatar) => `${avatar.name}:${avatar.color}:${avatar.initial}`).join('|');
+    const nextDisplay = avatars.length === 0 ? 'none' : 'inline-flex';
+    if (
+      container.dataset.humanPresenceSignature === signature
+      && container.dataset.humanPresenceDisplay === nextDisplay
+    ) {
+      return;
+    }
+    container.dataset.humanPresenceSignature = signature;
+    container.dataset.humanPresenceDisplay = nextDisplay;
+    this.shareHumanPresenceSignature = signature;
     container.className = 'share-pill-human-avatars';
     container.style.cssText = 'display:none;align-items:center;flex-shrink:0;padding-left:4px;position:relative;';
     container.replaceChildren();
@@ -3386,7 +3386,9 @@ class ProofEditorImpl implements ProofEditor {
     const { entries: agents, nextExpiryAtMs } = this.collectConnectedAgentEntries();
     this.scheduleShareAgentPresenceExpiryRefresh(nextExpiryAtMs);
     const nextState = agents.length > 0 ? 'connected' : 'empty';
-    const signature = agents.map((agent) => `${agent.id}:${agent.status}:${agent.at}`).join('|');
+    const signature = agents
+      .map((agent) => `${agent.id}:${agent.status}:${typeof agent.name === 'string' ? agent.name : ''}`)
+      .join('|');
     if (
       this.shareBannerAgentSlotEl.dataset.agentState === nextState
       && this.shareBannerAgentSlotEl.dataset.agentSignature === signature
@@ -3413,8 +3415,15 @@ class ProofEditorImpl implements ProofEditor {
     }
 
     const statusText = this.getSyncStatusTextLabel(syncStatus.label);
-    this.shareBannerSyncLabelEl.textContent = statusText;
-    this.shareBannerSyncLabelEl.style.display = this.shouldShowStatusText(statusText) ? '' : 'none';
+    const shouldShowText = this.shouldShowStatusText(statusText);
+    if (this.shareBannerSyncLabelEl.dataset.statusText !== statusText) {
+      this.shareBannerSyncLabelEl.textContent = statusText;
+      this.shareBannerSyncLabelEl.dataset.statusText = statusText;
+    }
+    this.shareBannerSyncLabelEl.dataset.visible = shouldShowText ? 'true' : 'false';
+    this.shareBannerSyncLabelEl.style.opacity = shouldShowText ? '1' : '0';
+    this.shareBannerSyncLabelEl.style.visibility = shouldShowText ? 'visible' : 'hidden';
+    this.shareBannerSyncLabelEl.setAttribute('aria-hidden', shouldShowText ? 'false' : 'true');
   }
 
   private canToggleTrackChanges(): boolean {
@@ -4824,6 +4833,7 @@ class ProofEditorImpl implements ProofEditor {
     this.shareBannerAgentSlotEl = null;
     this.shareBannerSyncDotEl = null;
     this.shareBannerSyncLabelEl = null;
+    this.shareHumanPresenceSignature = '';
     if (this.shareStatusHideTimer) {
       clearTimeout(this.shareStatusHideTimer);
       this.shareStatusHideTimer = null;

@@ -42,7 +42,7 @@ import { resolveQuoteRange } from '../utils/text-range';
 const markPopoverKey = new PluginKey('mark-popover');
 const controllers = new WeakMap<EditorView, MarkPopoverController>();
 type PopoverMode = 'thread' | 'suggestion' | 'composer' | null;
-type RenderMode = 'legacy-popover' | 'mobile-sheet';
+type RenderMode = 'legacy-popover' | 'mobile-sheet' | 'desktop-side-panel';
 type ThreadFocusMode = 'reply-box' | 'sheet' | 'none';
 
 export type CommentPopoverDraftSnapshot =
@@ -244,6 +244,52 @@ function positionPopover(element: HTMLElement, view: EditorView, anchor: MarkRan
     element.style.left = `${left}px`;
     element.style.top = `${top}px`;
     element.dataset.placement = hasRoomAbove ? 'above' : 'below';
+  } catch {
+    // Ignore positioning errors for invalid positions.
+  }
+}
+
+function shouldUseDesktopSuggestionPanel(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (isMobileTouch()) return false;
+  const coarsePointer = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(pointer: coarse)').matches
+    : false;
+  if (coarsePointer) return false;
+  return window.innerWidth > 900;
+}
+
+function positionSidePanel(element: HTMLElement, view: EditorView, anchor: MarkRange | null): void {
+  if (!anchor) return;
+  try {
+    const anchorBox = getAnchorBox(view, anchor);
+    if (typeof view.dom.getBoundingClientRect !== 'function') return;
+    if (typeof element.getBoundingClientRect !== 'function') return;
+    const editorRect = view.dom.getBoundingClientRect();
+    const panelRect = element.getBoundingClientRect();
+    const margin = 16;
+    const panelGap = 20;
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+    const safeTop = getTopViewportInset(margin);
+    const maxTop = Math.max(safeTop, viewportH - panelRect.height - margin);
+    const canDockRight = viewportW - editorRect.right >= panelRect.width + panelGap + margin;
+    const canDockLeft = editorRect.left >= panelRect.width + panelGap + margin;
+
+    let left = clamp(viewportW - panelRect.width - margin, margin, viewportW - panelRect.width - margin);
+    let placement = 'panel-floating';
+    if (canDockRight) {
+      left = clamp(editorRect.right + panelGap, margin, viewportW - panelRect.width - margin);
+      placement = 'panel-right';
+    } else if (canDockLeft) {
+      left = clamp(editorRect.left - panelGap - panelRect.width, margin, viewportW - panelRect.width - margin);
+      placement = 'panel-left';
+    }
+
+    const top = clamp(anchorBox.top - 12, safeTop, maxTop);
+    element.style.left = `${Math.round(left)}px`;
+    element.style.top = `${Math.round(top)}px`;
+    element.dataset.placement = placement;
   } catch {
     // Ignore positioning errors for invalid positions.
   }
@@ -782,6 +828,7 @@ class MarkPopoverController {
 
   private scheduleSuggestionHoverClose(): void {
     if (isMobileTouch()) return;
+    if (this.renderMode === 'desktop-side-panel') return;
     if (!this.activeSuggestionOpenedFromHover) return;
     if (this.suggestionHoverCloseTimer !== null) {
       window.clearTimeout(this.suggestionHoverCloseTimer);
@@ -797,6 +844,7 @@ class MarkPopoverController {
 
   private handleEditorMouseMove = (event: MouseEvent) => {
     if (isMobileTouch()) return;
+    if (shouldUseDesktopSuggestionPanel()) return;
     if (event.buttons !== 0) return;
     const target = event.target as HTMLElement | null;
     const markEl = target?.closest('[data-mark-id]') as HTMLElement | null;
@@ -1200,7 +1248,7 @@ class MarkPopoverController {
   update(view: EditorView): void {
     this.view = view;
 
-    const nextRenderMode: RenderMode = shouldUseCommentUiV2() ? 'mobile-sheet' : 'legacy-popover';
+    const nextRenderMode = this.getPreferredRenderMode(this.mode);
     if (this.mode && nextRenderMode !== this.renderMode) {
       if (this.mode === 'composer') {
         this.renderMode = nextRenderMode;
@@ -1238,6 +1286,8 @@ class MarkPopoverController {
     if (this.mode && this.anchor) {
       if (this.renderMode === 'legacy-popover') {
         positionPopover(this.popover, view, this.anchor);
+      } else if (this.renderMode === 'desktop-side-panel') {
+        positionSidePanel(this.popover, view, this.anchor);
       }
       this.updateSheetViewportOffset();
     }
@@ -1273,7 +1323,7 @@ class MarkPopoverController {
     this.hasLiveSelection = false;
     this.cachedActionRange = null;
     this.cachedActionRangeAt = 0;
-    this.renderMode = shouldUseCommentUiV2() ? 'mobile-sheet' : 'legacy-popover';
+    this.renderMode = this.getPreferredRenderMode('composer');
 
     setActiveMark(this.view, null);
     setComposeAnchorRange(this.view, range);
@@ -1301,7 +1351,7 @@ class MarkPopoverController {
     this.hasLiveSelection = false;
     this.cachedActionRange = null;
     this.cachedActionRangeAt = 0;
-    this.renderMode = shouldUseCommentUiV2() ? 'mobile-sheet' : 'legacy-popover';
+    this.renderMode = this.getPreferredRenderMode(this.mode);
     this.threadFocusMode = options?.threadFocusMode ?? 'reply-box';
     this.activeSuggestionOpenedFromHover = mark.kind !== 'comment' && options?.source === 'hover';
     if (this.suggestionHoverCloseTimer !== null) {
@@ -1372,10 +1422,15 @@ class MarkPopoverController {
 
   private open(): void {
     this.popover.style.display = 'block';
+    this.popover.classList.toggle('mark-popover-side-panel', this.renderMode === 'desktop-side-panel');
     if (this.renderMode === 'legacy-popover') {
       this.popover.classList.remove('mark-popover-sheet');
       this.backdrop.style.display = 'none';
       positionPopover(this.popover, this.view, this.anchor);
+    } else if (this.renderMode === 'desktop-side-panel') {
+      this.popover.classList.remove('mark-popover-sheet');
+      this.backdrop.style.display = 'none';
+      positionSidePanel(this.popover, this.view, this.anchor);
     } else {
       this.popover.classList.add('mark-popover-sheet');
       this.backdrop.style.display = 'block';
@@ -1408,9 +1463,17 @@ class MarkPopoverController {
   private hideOverlayChrome(): void {
     this.backdrop.style.display = 'none';
     this.popover.classList.remove('mark-popover-sheet');
+    this.popover.classList.remove('mark-popover-side-panel');
     this.popover.classList.remove('mark-popover-keyboard-open');
     this.popover.style.bottom = '';
     this.popover.style.maxHeight = '';
+  }
+
+  private getPreferredRenderMode(mode: PopoverMode): RenderMode {
+    if (mode === 'suggestion' && shouldUseDesktopSuggestionPanel()) {
+      return 'desktop-side-panel';
+    }
+    return shouldUseCommentUiV2() ? 'mobile-sheet' : 'legacy-popover';
   }
 
   private updateSheetViewportOffset(): void {

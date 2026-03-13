@@ -58,6 +58,9 @@ function run(): void {
   );
   assert(
     popoverSource.includes("view.dom.addEventListener('mousemove', this.handleEditorMouseMove);")
+      && popoverSource.includes("'desktop-side-panel'")
+      && popoverSource.includes('private getPreferredRenderMode(mode: PopoverMode): RenderMode {')
+      && popoverSource.includes('positionSidePanel(')
       && popoverSource.includes("source?: 'direct' | 'hover'")
       && popoverSource.includes("appendDetailRow('Original text', original);")
       && popoverSource.includes("private renderSuggestionRail(): void {")
@@ -84,7 +87,21 @@ function run(): void {
       && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion review UI to support hover/direct open, a simple-markup suggestion rail, capture-phase review key handling, retry transient review actions, and active suggestion navigation',
+    'Expected suggestion review UI to support a desktop side panel, hover/direct open where appropriate, a simple-markup suggestion rail, capture-phase review key handling, retry transient review actions, and active suggestion navigation',
+  );
+  assert(
+    editorSource.includes("return normalized.length > 0 && normalized !== 'Saved';")
+      && editorSource.includes("this.shareBannerSyncLabelEl.style.opacity = shouldShowText ? '1' : '0';")
+      && editorSource.includes('min-width:78px;')
+      && editorSource.includes('min-width:52px;'),
+    'Expected the share banner sync status to stay layout-stable and stop flashing Saved on every small interaction',
+  );
+  assert(
+    editorSource.includes('container.dataset.humanPresenceSignature === signature')
+      && editorSource.includes("container.dataset.humanPresenceDisplay === nextDisplay")
+      && editorSource.includes('this.shareHumanPresenceSignature = signature;')
+      && editorSource.includes("map((agent) => `${agent.id}:${agent.status}:${typeof agent.name === 'string' ? agent.name : ''}`)"),
+    'Expected collaborator and agent banner controls to skip rebuilds when only heartbeat noise changes',
   );
   assert(
     editorSource.includes('private scheduleShareMarksFlush(): void {')

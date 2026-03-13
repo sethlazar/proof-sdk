@@ -226,6 +226,49 @@
       line-height: 1.4;
     }
 
+    .mark-popover.mark-popover-side-panel {
+      width: min(320px, calc(100vw - 32px));
+      max-width: min(320px, calc(100vw - 32px));
+      border-radius: 16px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.98);
+      color: #111827;
+      border: 1px solid rgba(15, 23, 42, 0.10);
+      box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+    }
+
+    .mark-popover.mark-popover-side-panel .mark-popover-header {
+      color: #0f172a;
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+
+    .mark-popover.mark-popover-side-panel .mark-popover-body {
+      color: #111827;
+    }
+
+    .mark-popover.mark-popover-side-panel .mark-popover-actions {
+      flex-wrap: wrap;
+      margin-top: 12px;
+    }
+
+    .mark-popover.mark-popover-side-panel .mark-popover-actions button {
+      min-height: 38px;
+      padding: 8px 12px;
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      background: #eef2f7;
+      color: #111827;
+    }
+
+    .mark-popover.mark-popover-side-panel .mark-popover-actions button:hover {
+      background: #e2e8f0;
+    }
+
+    .mark-popover.mark-popover-side-panel .mark-popover-actions button:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+
     .mark-popover-backdrop {
       position: fixed;
       inset: 0;
