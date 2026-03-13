@@ -9,7 +9,7 @@
  */
 
 import { Schema } from '@milkdown/kit/prose/model';
-import { EditorState, Plugin } from '@milkdown/kit/prose/state';
+import { EditorState, Plugin, TextSelection } from '@milkdown/kit/prose/state';
 import { ySyncPluginKey } from 'y-prosemirror';
 import {
   generateMarkId,
@@ -4380,6 +4380,176 @@ test('wrapTransactionForSuggestions keeps editing inside a live replace suggesti
   assertEqual(metadata[markId]?.content, 'planetary', 'Expected live replace metadata content to track the edited text');
   assertEqual(metadata[markId]?.quote, 'planetary', 'Expected live replace quote to track the edited text');
   assertEqual(metadata[markId]?.originalQuote, 'world', 'Expected reject metadata to retain the original text');
+});
+
+test('wrapTransactionForSuggestions treats selection overwrite diffs as one semantic replacement', () => {
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: marksSchema.node('doc', null, [
+      marksSchema.node('paragraph', null, [marksSchema.text('Alpha beta gamma')]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  const from = state.doc.textBetween(0, state.doc.content.size, '\n', '\n').indexOf('beta') + 1;
+  const to = from + 'beta'.length;
+  state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, from, to)));
+
+  // Native browser overwrite can emit a minimal text diff that preserves the common suffix:
+  // replacing "beta" with "delta" comes through as replacing just "be" with "del".
+  const wrapped = wrapTransactionForSuggestions(
+    state.tr.insertText('del', from, from + 2),
+    state,
+    true,
+  );
+  state = state.apply(wrapped);
+
+  const docText = state.doc.textBetween(0, state.doc.content.size, '\n', '\n');
+  assertEqual(docText, 'Alpha delta gamma', 'Expected semantic overwrite handling to preserve the final visible text');
+
+  const marks = getPendingSuggestions(getMarks(state));
+  assertEqual(marks.length, 1, 'Expected one pending suggestion for the whole overwrite');
+  assertEqual(marks[0]?.kind, 'replace', 'Expected selection overwrite to stay a replacement suggestion');
+  assert(marks[0]?.range, 'Expected replacement suggestion to stay anchored');
+  assertEqual(getTextForRange(state.doc, marks[0]!.range!), 'delta', 'Expected replacement anchor to cover the full edited text');
+
+  const metadata = getMarkMetadataWithQuotes(state);
+  const [markId] = Object.keys(metadata);
+  assertEqual(metadata[markId]?.originalQuote, 'beta', 'Expected replacement metadata to preserve the full original selection');
+  assertEqual(metadata[markId]?.content, 'delta', 'Expected replacement metadata to keep the full edited text');
+  assertEqual(metadata[markId]?.quote, 'delta', 'Expected replacement quote to match the visible edited text');
+
+  const acceptedTransactions: import('@milkdown/kit/prose/state').Transaction[] = [];
+  const acceptView = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: import('@milkdown/kit/prose/state').Transaction) {
+      acceptedTransactions.push(tr);
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const accepted = acceptMark(acceptView, markId);
+  assert(accepted, 'Expected semantic overwrite replacement to be accepted cleanly');
+  assertEqual(
+    state.doc.textBetween(0, state.doc.content.size, '\n', '\n'),
+    'Alpha delta gamma',
+    'Expected accept to keep the edited text in the document',
+  );
+  assertEqual(Object.keys(getMarkMetadata(state)).length, 0, 'Expected accept to clear overwrite metadata');
+  assert(acceptedTransactions.length > 0, 'Expected accept to dispatch a document transaction');
+});
+
+test('wrapTransactionForSuggestions honors DOM selection metadata for native overwrite replacements', () => {
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: marksSchema.node('doc', null, [
+      marksSchema.node('paragraph', null, [marksSchema.text('Alpha beta gamma')]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  const from = state.doc.textBetween(0, state.doc.content.size, '\n', '\n').indexOf('beta') + 1;
+  const to = from + 'beta'.length;
+
+  // Simulate the browser path where ProseMirror selection has already drifted but the DOM
+  // still holds the full selected word being overwritten.
+  state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, from + 2)));
+
+  const wrapped = wrapTransactionForSuggestions(
+    state.tr
+      .insertText('del', from, from + 2)
+      .setMeta('proof-dom-selection-range', { from, to }),
+    state,
+    true,
+  );
+  state = state.apply(wrapped);
+
+  const metadata = getMarkMetadataWithQuotes(state);
+  const [markId] = Object.keys(metadata);
+  assertEqual(
+    state.doc.textBetween(0, state.doc.content.size, '\n', '\n'),
+    'Alpha delta gamma',
+    'Expected DOM selection metadata to preserve the visible overwrite result',
+  );
+  assertEqual(metadata[markId]?.originalQuote, 'beta', 'Expected DOM selection metadata to restore the full original selection');
+  assertEqual(metadata[markId]?.content, 'delta', 'Expected DOM selection metadata to capture the full edited text');
+});
+
+test('wrapTransactionForSuggestions expands word-fragment overwrite diffs into whole-word replacements', () => {
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: marksSchema.node('doc', null, [
+      marksSchema.node('paragraph', null, [marksSchema.text('Alpha beta gamma')]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  const from = state.doc.textBetween(0, state.doc.content.size, '\n', '\n').indexOf('beta') + 1;
+
+  // Simulate a browser-generated minimal diff that rewrites only the changed prefix
+  // inside the word while leaving the shared suffix in place.
+  state = state.apply(state.tr.setSelection(TextSelection.create(state.doc, from + 2)));
+
+  const wrapped = wrapTransactionForSuggestions(
+    state.tr.insertText('del', from, from + 2),
+    state,
+    true,
+  );
+  state = state.apply(wrapped);
+
+  const metadata = getMarkMetadataWithQuotes(state);
+  const [markId] = Object.keys(metadata);
+  assertEqual(
+    state.doc.textBetween(0, state.doc.content.size, '\n', '\n'),
+    'Alpha delta gamma',
+    'Expected word-fragment overwrite diffs to preserve the final visible word',
+  );
+  assertEqual(metadata[markId]?.originalQuote, 'beta', 'Expected expanded replacement to preserve the full original word');
+  assertEqual(metadata[markId]?.content, 'delta', 'Expected expanded replacement to preserve the full edited word');
 });
 
 test('pending insert suggestions expose the live inserted text instead of stale cached content', () => {

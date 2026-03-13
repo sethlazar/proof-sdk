@@ -1111,6 +1111,7 @@ class ProofEditorImpl implements ProofEditor {
   private lastContentChangeSource: 'local' | 'remote' | 'system' | null = null;
   private pendingProjectionPublish: boolean = false;
   private trackChangesViewMode: SuggestionDisplayMode = getInitialTrackChangesViewMode();
+  private pendingDomSuggestionSelection: MarkRange | null = null;
   private initialMarksSynced: boolean = false;
   private lastReceivedServerMarks: Record<string, StoredMark> = {};
   private collabTemplateSeedClaimId: string | null = null;
@@ -4905,11 +4906,12 @@ class ProofEditorImpl implements ProofEditor {
   }
 
   private shouldPublishProjectionMarkdown(
-    source: 'content-sync' | 'direct-content' | 'marks-change' | 'marks-flush',
+    source: 'content-sync' | 'direct-content' | 'marks-change' | 'marks-flush' | 'review-backfill',
   ): boolean {
     if (!this.collabEnabled || !this.collabCanEdit) return false;
-    if (this.isShareMode) return false;
     if (!this.hasCompletedInitialCollabHydration) return false;
+    if (source === 'review-backfill') return true;
+    if (this.isShareMode) return false;
     if (source === 'marks-change' || source === 'marks-flush') return false;
     if (source === 'content-sync' && this.lastContentChangeSource !== 'local') return false;
     return this.hasLocalContentEditSinceHydration;
@@ -4926,7 +4928,7 @@ class ProofEditorImpl implements ProofEditor {
   private publishProjectionMarkdown(
     view: import('@milkdown/kit/prose/view').EditorView,
     markdown: string,
-    source: 'content-sync' | 'direct-content' | 'marks-change' | 'marks-flush',
+    source: 'content-sync' | 'direct-content' | 'marks-change' | 'marks-flush' | 'review-backfill',
   ): void {
     if (!this.shouldPublishProjectionMarkdown(source)) return;
     if (!this.canPublishProjectionMarkdownNow()) {
@@ -5252,6 +5254,8 @@ class ProofEditorImpl implements ProofEditor {
         cursorTimeout = setTimeout(() => {
           void view.state.selection.from;
         }, 50);
+        const domSelection = this.getDomSelectionRange(view);
+        this.pendingDomSuggestionSelection = domSelection && domSelection.from < domSelection.to ? domSelection : null;
       };
 
       const reportKeyboardActivity = (event: KeyboardEvent) => {
@@ -5266,6 +5270,8 @@ class ProofEditorImpl implements ProofEditor {
 
       const reportInputActivity = () => {
         this.reportEditorInputActivity('input');
+        const domSelection = this.getDomSelectionRange(view);
+        this.pendingDomSuggestionSelection = domSelection && domSelection.from < domSelection.to ? domSelection : null;
       };
 
       dom.addEventListener('keyup', reportKeyboardActivity);
@@ -5426,10 +5432,19 @@ class ProofEditorImpl implements ProofEditor {
             return;
           }
 
+          const domSelectionRange = this.pendingDomSuggestionSelection ?? this.getDomSelectionRange(view);
+          if (domSelectionRange && domSelectionRange.from < domSelectionRange.to) {
+            tr.setMeta('proof-dom-selection-range', domSelectionRange);
+          }
+          this.pendingDomSuggestionSelection = null;
+
           // Wrap the transaction to convert edits to suggestions
           const wrappedTr = wrapTransactionForSuggestions(tr, view.state, true);
           dispatchWithRevision(wrappedTr);
         } else {
+          if (tr?.docChanged) {
+            this.pendingDomSuggestionSelection = null;
+          }
           dispatchWithRevision(tr);
         }
 
@@ -5444,6 +5459,32 @@ class ProofEditorImpl implements ProofEditor {
 
       console.log('[setupSuggestionsInterceptor] Suggestions interceptor installed');
     });
+  }
+
+  private getDomSelectionRange(view: EditorView): MarkRange | null {
+    const selection = document.getSelection();
+    if (!selection || selection.rangeCount === 0) return null;
+
+    const range = selection.getRangeAt(0);
+    const getElement = (node: Node | null): Element | null => {
+      if (!node) return null;
+      return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+    };
+
+    const startElement = getElement(range.startContainer);
+    const endElement = getElement(range.endContainer);
+    if (!startElement || !endElement) return null;
+    if (!view.dom.contains(startElement) || !view.dom.contains(endElement)) return null;
+
+    try {
+      const startPos = view.posAtDOM(range.startContainer, range.startOffset);
+      const endPos = view.posAtDOM(range.endContainer, range.endOffset);
+      const from = Math.min(startPos, endPos);
+      const to = Math.max(startPos, endPos);
+      return from === to ? null : { from, to };
+    } catch {
+      return null;
+    }
   }
 
   private posToLineCol(doc: import('@milkdown/kit/prose/model').Node, pos: number): { line: number; col: number } {
@@ -6633,6 +6674,11 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.editor) {
       console.warn('[enableSuggestions] Editor not initialized');
       return;
+    }
+
+    const currentMode = this.getTrackChangesViewMode();
+    if (currentMode === 'all') {
+      this.setTrackChangesViewMode('simple');
     }
 
     this.editor.action((ctx) => {
@@ -8824,6 +8870,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.editor || !this.isShareMode) return false;
 
     let metadata: Record<string, unknown> | null = null;
+    let expectedQuotes: Record<string, string> = {};
     let projectionMarkdown: string | null = null;
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
@@ -8836,6 +8883,17 @@ class ProofEditorImpl implements ProofEditor {
         return plan.markIds.includes(localMarkId);
       });
       metadata = entries.length > 0 ? Object.fromEntries(entries) : null;
+      expectedQuotes = Object.fromEntries(
+        entries.flatMap(([localMarkId, value]) => {
+          if (!value || typeof value !== 'object') return [];
+          const quote = typeof (value as StoredMark).quote === 'string'
+            ? (value as StoredMark).quote
+            : typeof (value as StoredMark).content === 'string'
+              ? (value as StoredMark).content as string
+              : null;
+          return quote && quote.trim().length > 0 ? [[localMarkId, quote]] : [];
+        }),
+      );
       if (entries.length > 0 && this.collabEnabled && this.collabCanEdit) {
         const serializer = ctx.get(serializerCtx);
         projectionMarkdown = this.normalizeMarkdownForRuntime(serializer(view.state.doc));
@@ -8855,13 +8913,13 @@ class ProofEditorImpl implements ProofEditor {
         }
         collabClient.setMarksMetadata(metadata as Record<string, StoredMark>);
       });
-      synced = await this.waitForShareSuggestionMetadata(markIds);
+      synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);
     }
 
     if (!synced) {
       const pushed = await shareClient.pushMarks(metadata, actor);
       if (!pushed) return false;
-      synced = await this.waitForShareSuggestionMetadata(markIds);
+      synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);
     }
 
     if (!synced) return false;
@@ -8874,7 +8932,11 @@ class ProofEditorImpl implements ProofEditor {
     return true;
   }
 
-  private async waitForShareSuggestionMetadata(markIds: string[], timeoutMs = 1500): Promise<boolean> {
+  private async waitForShareSuggestionMetadata(
+    markIds: string[],
+    expectedQuotes: Record<string, string> = {},
+    timeoutMs = 1500,
+  ): Promise<boolean> {
     if (markIds.length === 0) return false;
     const slug = shareClient.getSlug();
     if (!slug) return false;
@@ -8895,7 +8957,19 @@ class ProofEditorImpl implements ProofEditor {
             && typeof payload.marks === 'object'
             && !Array.isArray(payload.marks)
           ) ? payload.marks as Record<string, unknown> : null;
-          if (marks && markIds.every((markId) => Object.prototype.hasOwnProperty.call(marks, markId))) {
+          const content = typeof (payload as { content?: unknown })?.content === 'string'
+            ? (payload as { content: string }).content
+            : typeof (payload as { markdown?: unknown })?.markdown === 'string'
+              ? (payload as { markdown: string }).markdown
+              : '';
+          if (
+            marks
+            && markIds.every((markId) => Object.prototype.hasOwnProperty.call(marks, markId))
+            && markIds.every((markId) => {
+              const expected = expectedQuotes[markId];
+              return !expected || content.includes(expected);
+            })
+          ) {
             return true;
           }
         }

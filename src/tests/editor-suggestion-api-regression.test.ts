@@ -67,7 +67,7 @@ function run(): void {
       && popoverSource.includes('private getPreferredRenderMode(mode: PopoverMode): RenderMode {')
       && popoverSource.includes('positionSidePanel(')
       && popoverSource.includes("source?: 'direct' | 'hover'")
-      && popoverSource.includes("appendDetailRow('Original text', original);")
+      && popoverSource.includes("appendDetailRow('Original text', original")
       && popoverSource.includes("private renderSuggestionRail(): void {")
       && popoverSource.includes("getSuggestionDisplayMode(this.view.state) !== 'simple'")
       && popoverSource.includes("this.suggestionRail.className = 'mark-suggestion-rail';")
@@ -113,6 +113,18 @@ function run(): void {
       && editorSource.includes('this.shareMarksFlushTimer = setTimeout(() => {')
       && editorSource.includes('this.flushShareMarks();'),
     'Expected share mode mark sync to defer flushes until the next tick',
+  );
+  assert(
+    editorSource.includes('private pendingDomSuggestionSelection: MarkRange | null = null;')
+      && editorSource.includes("const domSelectionRange = this.pendingDomSuggestionSelection ?? this.getDomSelectionRange(view);")
+      && editorSource.includes("tr.setMeta('proof-dom-selection-range', domSelectionRange);")
+      && editorSource.includes('this.pendingDomSuggestionSelection = null;'),
+    'Expected tracked native overwrites to preserve the pre-input DOM selection long enough for suggestion wrapping',
+  );
+  assert(
+    editorSource.includes("if (source === 'review-backfill') return true;")
+      && editorSource.includes("this.publishProjectionMarkdown(view, projectionMarkdown, 'review-backfill');"),
+    'Expected share review retries to republish the live projection markdown before retrying accept/reject',
   );
   assert(
     editorSource.includes('private notifyAuthorshipStatsUpdated(stats: ReturnType<typeof getAuthorshipStats>): void {')
@@ -175,11 +187,14 @@ function run(): void {
       && editorSource.includes("result.error.code === 'MARK_NOT_HYDRATED'")
       && editorSource.includes('return { markIds: missingMarkIds.length > 0 ? missingMarkIds : null };')
       && editorSource.includes('metadata = entries.length > 0 ? Object.fromEntries(entries) : null;')
+      && editorSource.includes('expectedQuotes = Object.fromEntries(')
       && editorSource.includes("this.publishProjectionMarkdown(view, projectionMarkdown, 'review-backfill');")
       && editorSource.includes('collabClient.setMarksMetadata(metadata as Record<string, StoredMark>);')
-      && editorSource.includes('synced = await this.waitForShareSuggestionMetadata(markIds);')
-      && editorSource.includes('private async waitForShareSuggestionMetadata(markIds: string[], timeoutMs = 1500): Promise<boolean> {'),
-    'Expected share suggestion persistence to backfill the server-reported missing pending suggestions before retrying',
+      && editorSource.includes('synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);')
+      && editorSource.includes('private async waitForShareSuggestionMetadata(')
+      && editorSource.includes('expectedQuotes: Record<string, string> = {}')
+      && editorSource.includes('return !expected || content.includes(expected);'),
+    'Expected share suggestion persistence to backfill the server-reported missing pending suggestions and wait for the live quote to exist server-side before retrying',
   );
 
   const navigateNextSuggestionBlock = sliceBetween(editorSource, '  navigateToNextSuggestion(): string | null {', '\n  /**\n   * Navigate to the previous pending suggestion\n   */');
