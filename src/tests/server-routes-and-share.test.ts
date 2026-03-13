@@ -369,8 +369,13 @@ async function runServerSourceTests(): Promise<void> {
   await test('D1: server source serves built share-page assets from dist', async () => {
     assertIncludes(
       serverSource,
-      "app.use(express.static(path.join(__dirname, '..', 'dist'), { index: false }));",
+      "app.use(express.static(path.join(__dirname, '..', 'dist'), staticAssetOptions));",
       'server source should serve built dist assets so /d/:slug can load the editor bundle',
+    );
+    assertIncludes(
+      serverSource,
+      "res.setHeader('Cache-Control', 'no-store, max-age=0');",
+      'server source should disable local browser caching for share-page assets outside production',
     );
   });
 
@@ -899,6 +904,11 @@ async function runRoutePayloadValidationTests(): Promise<void> {
         Accept: 'text/html',
       });
       assert(response.status === 200, `Expected 200 HTML response, got ${response.status}`);
+      assertIncludes(
+        response.headers.get('cache-control') || '',
+        'no-store',
+        'Expected share HTML to disable browser caching in development',
+      );
       const body = response.body || '';
       assertIncludes(body, '<meta property="og:title"', 'Expected og:title meta tag');
       assertIncludes(body, '<meta property="og:description"', 'Expected og:description meta tag');
@@ -1044,6 +1054,11 @@ async function runRoutePayloadValidationTests(): Promise<void> {
           Accept: 'text/html',
         });
         assert(response.status === 200, `Expected 200 HTML response, got ${response.status}`);
+        assertIncludes(
+          response.body || '',
+          'window.__PROOF_CONFIG__.trackChangesViewDefaultMode = "simple";',
+          'Expected runtime config to default shared docs to simple track changes view'
+        );
         assertIncludes(
           response.body || '',
           'window.__PROOF_CONFIG__.commentUiDefaultMode = "legacy";',

@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Response } from 'express';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
 import path from 'path';
@@ -41,10 +41,21 @@ async function main(): Promise<void> {
   const server = createServer(app);
   const wss = new WebSocketServer({ server, path: '/ws' });
   const allowedCorsOrigins = parseAllowedCorsOrigins();
+  const shouldDisableStaticCaching = process.env.NODE_ENV !== 'production';
+  const staticAssetOptions = shouldDisableStaticCaching
+    ? {
+      index: false,
+      setHeaders: (res: Response) => {
+        res.setHeader('Cache-Control', 'no-store, max-age=0');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      },
+    }
+    : { index: false };
 
   app.use(express.json({ limit: '10mb' }));
-  app.use(express.static(path.join(__dirname, '..', 'public')));
-  app.use(express.static(path.join(__dirname, '..', 'dist'), { index: false }));
+  app.use(express.static(path.join(__dirname, '..', 'public'), staticAssetOptions));
+  app.use(express.static(path.join(__dirname, '..', 'dist'), staticAssetOptions));
 
   app.use((req, res, next) => {
     const originHeader = req.header('origin');

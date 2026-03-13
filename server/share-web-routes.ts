@@ -165,11 +165,19 @@ function buildLiveViewerLeaseConnectionId(
   return `share-live:${slug}:${accessEpoch}:${role}:${digest}`;
 }
 
+function applyLocalNoCacheHeaders(res: Response): void {
+  if (process.env.NODE_ENV === 'production') return;
+  res.setHeader('Cache-Control', 'no-store, max-age=0');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+}
+
 function buildShareRuntimeConfigScript(slug: string, shareToken?: string | null): string {
   const commentUiDefaultMode = normalizeCommentUiMode(process.env.PROOF_COMMENT_UI_DEFAULT_MODE);
   const configLines = [
     shareToken ? `window.__PROOF_CONFIG__.shareSlug = ${JSON.stringify(slug)};` : '',
     shareToken ? `window.__PROOF_CONFIG__.shareToken = ${JSON.stringify(shareToken)};` : '',
+    'window.__PROOF_CONFIG__.trackChangesViewDefaultMode = "simple";',
     commentUiDefaultMode ? `window.__PROOF_CONFIG__.commentUiDefaultMode = ${JSON.stringify(commentUiDefaultMode)};` : '',
   ].filter(Boolean);
   if (configLines.length === 0) return '';
@@ -565,6 +573,7 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
     if (doc) {
       recordShareLinkOpen('success', `AGENT_HTML_${doc.share_state}`);
     }
+    applyLocalNoCacheHeaders(res);
     res.append('Link', `</documents/${slug}/state>; rel="agent-state"`);
     res.append('Link', '</.well-known/agent.json>; rel="agent-discovery"');
     const agentHtmlToken = tokenSource === 'query:token' ? token : null;
@@ -635,6 +644,7 @@ shareWebRoutes.get('/d/:slug', (req: Request, res: Response) => {
       parsePositiveInt(process.env.COLLAB_SESSION_TTL_SECONDS, 5 * 60) * 1000,
     );
   }
+  applyLocalNoCacheHeaders(res);
   res.append('Link', `</documents/${slug}/state>; rel="agent-state"`);
   res.append('Link', '</.well-known/agent.json>; rel="agent-discovery"');
   // Option 2: The SPA HTML includes a hidden <div id="agent-instructions"> with
