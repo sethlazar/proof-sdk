@@ -19,6 +19,7 @@ function run(): void {
   const keybindingsSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/keybindings.ts'), 'utf8');
   const marksSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/marks.ts'), 'utf8');
   const popoverSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/mark-popover.ts'), 'utf8');
+  const suggestionsSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/suggestions.ts'), 'utf8');
   const collabCursorSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/collab-cursors.ts'), 'utf8');
   const shareClientSource = readFileSync(path.resolve(process.cwd(), 'src/bridge/share-client.ts'), 'utf8');
   const agentRoutesSource = readFileSync(path.resolve(process.cwd(), 'server/agent-routes.ts'), 'utf8');
@@ -85,6 +86,45 @@ function run(): void {
     'Expected the share banner to expose a visible Edit / Track Changes toggle',
   );
   assert(
+    editorSource.includes('undo(): boolean {')
+      && editorSource.includes('redo(): boolean {')
+      && editorSource.includes('private undoSnapshotStack: string[] = [];')
+      && editorSource.includes('private redoSnapshotStack: string[] = [];')
+      && editorSource.includes('private currentUndoSnapshot: string | null = null;')
+      && editorSource.includes('private recordUndoSnapshot(')
+      && editorSource.includes('private ensureUndoSnapshotInitialized(): void {')
+      && editorSource.includes('private restoreUndoSnapshot(snapshot: string): boolean {')
+      && editorSource.includes('preserveHistory: true,')
+      && editorSource.includes('this.ensureUndoSnapshotInitialized();')
+      && editorSource.includes('if (this.collabEnabled) {')
+      && editorSource.includes('handled = collabUndo(view.state);')
+      && editorSource.includes('handled = collabRedo(view.state);')
+      && editorSource.includes('const commands = ctx.get(commandsCtx);')
+      && editorSource.includes('handled = commands.call(undoCommand.key);')
+      && editorSource.includes('handled = commands.call(redoCommand.key);')
+      && editorSource.includes('private createHistoryControls(): HTMLElement {')
+      && editorSource.includes("const undoButton = makeButton('↶', 'Undo (Cmd/Ctrl+Z)', () => this.undo());")
+      && editorSource.includes("const redoButton = makeButton('↷', 'Redo (Shift+Cmd/Ctrl+Z)', () => this.redo());")
+      && editorSource.includes('banner.replaceChildren(wordmark, separator, title, historyControls, trackChangesToggle')
+      && editorSource.includes("container.className = 'share-pill-history-controls';")
+      && editorSource.includes("button.className = 'share-pill-history-btn';"),
+    'Expected the share banner to expose undo/redo controls backed by a user-visible snapshot stack in share mode, with command fallbacks elsewhere',
+  );
+  assert(
+    suggestionsSource.includes("setMeta(suggestionsPluginKey, { enabled: true })")
+      && suggestionsSource.includes("setMeta(suggestionsPluginKey, { enabled: false })")
+      && suggestionsSource.includes(".setMeta('addToHistory', false);")
+      && editorSource.includes(".setMeta('document-load', true)")
+      && editorSource.includes(".setMeta('addToHistory', false);")
+      && editorSource.includes("view.dispatch(markTr.setMeta('addToHistory', false));")
+      && editorSource.includes("setMeta('heatmapUpdate', true)")
+      && editorSource.includes("setMeta('addToHistory', false);")
+      && editorSource.includes('if (!options?.preserveHistory) {')
+      && editorSource.includes('this.resetUndoSnapshots(view, ctx.get(serializerCtx));')
+      && editorSource.includes('this.recordUndoSnapshot(view, serializer);'),
+    'Expected document-load, suggestion-toggle, mark rehydration, and heatmap bookkeeping transactions to stay out of the undo history',
+  );
+  assert(
     popoverSource.includes("view.dom.addEventListener('mousemove', this.handleEditorMouseMove);")
       && popoverSource.includes("'desktop-side-panel'")
       && popoverSource.includes('function getSuggestionKindPresentation(')
@@ -127,8 +167,14 @@ function run(): void {
       && popoverSource.includes('this.openSuggestionAfterReview(nextMarkId, markId);')
       && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
+      && popoverSource.includes('preventMousePointerDown = false,')
+      && popoverSource.includes('preventMouseDown = false,')
+      && popoverSource.includes("button.addEventListener('mousedown', event => {")
+      && popoverSource.includes('if (preventMouseDown) {')
+      && popoverSource.includes('preventMousePointerDown: true,')
+      && popoverSource.includes('preventMouseDown: true,')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct open where appropriate, a simple-markup suggestion rail that still shows single-change counts, capture-phase review key handling, optimistic local review updates while share persistence settles, retry transient review actions, and active suggestion navigation that advances after review',
+    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct open where appropriate, a simple-markup suggestion rail that still shows single-change counts, capture-phase review key handling, optimistic local review updates while share persistence settles, retry transient review actions, active suggestion navigation that advances after review, and first-click side-panel review buttons that suppress the desktop focus steal',
   );
   assert(
     marksSource.includes('function insertAcceptNeedsMaterialization(')

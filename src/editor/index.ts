@@ -11,6 +11,7 @@
 
 import {
   Editor,
+  commandsCtx,
   rootCtx,
   defaultValueCtx,
   editorViewCtx,
@@ -21,13 +22,15 @@ import {
 } from '@milkdown/core';
 import { commonmark } from '@milkdown/preset-commonmark';
 import { gfm } from '@milkdown/preset-gfm';
-import { history } from '@milkdown/plugin-history';
+import { history, redoCommand, undoCommand } from '@milkdown/plugin-history';
 import { collab, collabServiceCtx } from '@milkdown/plugin-collab';
 import { listener, listenerCtx } from '@milkdown/plugin-listener';
 import { cursor } from '@milkdown/plugin-cursor';
 import { clipboard } from '@milkdown/plugin-clipboard';
 import { nord } from '@milkdown/theme-nord';
 import {
+  redo as collabRedo,
+  undo as collabUndo,
   yCursorPlugin,
   yCursorPluginKey,
   ySyncPluginKey,
@@ -785,7 +788,7 @@ export interface ProofEditor {
   heatMapMode: 'hidden' | 'subtle' | 'background' | 'full';
 
   init(): Promise<void>;
-  loadDocument(content: string, options?: { allowShareContentMutation?: boolean }): void;
+  loadDocument(content: string, options?: { allowShareContentMutation?: boolean; preserveHistory?: boolean }): void;
   getContent(): string;
   looksLikeMarkdown(content: string): boolean;
   getMarkdownSnapshot(): { content: string } | null;
@@ -816,6 +819,9 @@ export interface ProofEditor {
 
   // Batch operations (atomic multi-step edits)
   executeBatch(operations: BatchOperation[]): BatchResult;
+
+  undo(): boolean;
+  redo(): boolean;
 
   // Suggestions (track changes) methods
   enableSuggestions(): void;
@@ -1114,6 +1120,10 @@ class ProofEditorImpl implements ProofEditor {
   private hasCompletedInitialCollabHydration: boolean = false;
   private hasLocalContentEditSinceHydration: boolean = false;
   private lastContentChangeSource: 'local' | 'remote' | 'system' | null = null;
+  private undoSnapshotStack: string[] = [];
+  private redoSnapshotStack: string[] = [];
+  private currentUndoSnapshot: string | null = null;
+  private suppressUndoSnapshotCapture: boolean = false;
   private pendingProjectionPublish: boolean = false;
   private trackChangesViewMode: SuggestionDisplayMode = getInitialTrackChangesViewMode();
   private pendingDomSuggestionSelection: MarkRange | null = null;
@@ -1142,6 +1152,8 @@ class ProofEditorImpl implements ProofEditor {
   private shareBannerTitleEl: HTMLElement | null = null;
   private shareBannerEditModeButtonEl: HTMLButtonElement | null = null;
   private shareBannerTrackChangesButtonEl: HTMLButtonElement | null = null;
+  private shareBannerUndoButtonEl: HTMLButtonElement | null = null;
+  private shareBannerRedoButtonEl: HTMLButtonElement | null = null;
   private shareBannerAvatarsEl: HTMLElement | null = null;
   private shareBannerAgentSlotEl: HTMLElement | null = null;
   private shareBannerSyncDotEl: HTMLElement | null = null;
@@ -1329,6 +1341,13 @@ class ProofEditorImpl implements ProofEditor {
         // Set up listener for content changes
         ctx.get(listenerCtx).updated((_ctx, doc, prevDoc) => {
           if (prevDoc && doc.eq(prevDoc)) return;
+          const view = _ctx.get(editorViewCtx);
+          const serializer = _ctx.get(serializerCtx);
+          if (!this.currentUndoSnapshot) {
+            this.resetUndoSnapshots(view, serializer);
+          } else if (!this.suppressUndoSnapshotCapture && (!this.collabEnabled || view.hasFocus())) {
+            this.recordUndoSnapshot(view, serializer);
+          }
           this.scheduleContentSync();
         });
 
@@ -1615,7 +1634,9 @@ class ProofEditorImpl implements ProofEditor {
             this.applyPendingCollabTemplate();
             this.kickCollabHydration();
             this.applyLatestCollabMarksToEditor();
+            this.ensureUndoSnapshotInitialized();
             setTimeout(() => this.applyLatestCollabMarksToEditor(), 150);
+            setTimeout(() => this.ensureUndoSnapshotInitialized(), 200);
             this.installShareAgentPresenceObservers();
             this.clearErrorBanner();
             this.resetShareInitRetryState();
@@ -1666,6 +1687,7 @@ class ProofEditorImpl implements ProofEditor {
           this.lastReceivedServerMarks = initialMarks;
           this.initialMarksSynced = true;
         }
+        this.ensureUndoSnapshotInitialized();
         this.showErrorBanner('Live collaboration is currently unavailable for this shared document.');
         return;
       }
@@ -3064,6 +3086,34 @@ class ProofEditorImpl implements ProofEditor {
         align-items:center;
         flex-shrink:0;
       }
+      #share-banner .share-pill-history-controls {
+        display:inline-flex;
+        align-items:center;
+        gap:6px;
+        flex-shrink:0;
+      }
+      #share-banner .share-pill-history-btn {
+        display:inline-flex;
+        align-items:center;
+        justify-content:center;
+        min-width:40px;
+        min-height:40px;
+        border:none;
+        border-radius:999px;
+        background:rgba(17,24,39,0.06);
+        color:#374151;
+        font-size:16px;
+        line-height:1;
+        cursor:pointer;
+        transition:background 0.15s,color 0.15s,opacity 0.15s;
+      }
+      #share-banner .share-pill-history-btn:hover:not(:disabled) {
+        background:rgba(17,24,39,0.10);
+      }
+      #share-banner .share-pill-history-btn:disabled {
+        opacity:0.45;
+        cursor:default;
+      }
       #share-banner .share-pill-track-btn {
         white-space:nowrap;
       }
@@ -3134,6 +3184,14 @@ class ProofEditorImpl implements ProofEditor {
           min-height: 36px !important;
           padding: 0 10px !important;
           font-size: 11px !important;
+        }
+        #share-banner .share-pill-history-controls {
+          gap: 4px !important;
+        }
+        #share-banner .share-pill-history-btn {
+          min-width: 36px !important;
+          min-height: 36px !important;
+          font-size: 14px !important;
         }
         #share-banner .share-pill-status-inline .status-label {
           display:none !important;
@@ -3472,6 +3530,55 @@ class ProofEditorImpl implements ProofEditor {
     applyState(trackChangesButton, enabled, 'Record edits as tracked changes (Cmd/Ctrl+Shift+E)');
   }
 
+  private updateShareBannerHistoryDisplay(): void {
+    const undoButton = this.shareBannerUndoButtonEl;
+    const redoButton = this.shareBannerRedoButtonEl;
+    if (!undoButton || !redoButton) return;
+
+    const canUseHistory = Boolean(this.editor) && !this.isReadOnly && this.reviewLockCount === 0;
+    const hasUndo = canUseHistory && (this.collabEnabled ? this.undoSnapshotStack.length > 0 : true);
+    const hasRedo = canUseHistory && (this.collabEnabled ? this.redoSnapshotStack.length > 0 : true);
+    const applyState = (button: HTMLButtonElement, enabled: boolean, title: string) => {
+      button.disabled = !enabled;
+      button.title = enabled ? title : 'Nothing to undo or redo yet';
+      button.style.opacity = enabled ? '1' : '0.45';
+      button.style.cursor = enabled ? 'pointer' : 'default';
+    };
+
+    applyState(undoButton, hasUndo, 'Undo (Cmd/Ctrl+Z)');
+    applyState(redoButton, hasRedo, 'Redo (Shift+Cmd/Ctrl+Z)');
+  }
+
+  private createHistoryControls(): HTMLElement {
+    const container = document.createElement('div');
+    container.className = 'share-pill-history-controls';
+
+    const makeButton = (label: string, title: string, action: () => boolean): HTMLButtonElement => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'share-pill-history-btn';
+      button.textContent = label;
+      button.title = title;
+      button.onclick = () => {
+        if (button.disabled) return;
+        const handled = action();
+        if (handled) {
+          this.triggerHaptic('selection');
+        }
+      };
+      return button;
+    };
+
+    const undoButton = makeButton('↶', 'Undo (Cmd/Ctrl+Z)', () => this.undo());
+    const redoButton = makeButton('↷', 'Redo (Shift+Cmd/Ctrl+Z)', () => this.redo());
+
+    this.shareBannerUndoButtonEl = undoButton;
+    this.shareBannerRedoButtonEl = redoButton;
+    container.append(undoButton, redoButton);
+    this.updateShareBannerHistoryDisplay();
+    return container;
+  }
+
   private createTrackChangesModeToggle(): HTMLElement {
     const container = document.createElement('div');
     container.className = 'share-pill-track-toggle';
@@ -3528,6 +3635,8 @@ class ProofEditorImpl implements ProofEditor {
       this.shareBannerTitleEl
       && this.shareBannerEditModeButtonEl
       && this.shareBannerTrackChangesButtonEl
+      && this.shareBannerUndoButtonEl
+      && this.shareBannerRedoButtonEl
       && this.shareBannerAvatarsEl
       && this.shareBannerAgentSlotEl
       && this.shareBannerSyncDotEl
@@ -3538,6 +3647,7 @@ class ProofEditorImpl implements ProofEditor {
       this.updateShareBannerPresenceDisplay();
       this.updateShareBannerAgentControlDisplay();
       this.updateShareBannerSyncDisplay();
+      this.updateShareBannerHistoryDisplay();
       this.updateShareBannerTrackChangesDisplay();
       this.scheduleBannerLayoutUpdate();
       return;
@@ -3565,6 +3675,7 @@ class ProofEditorImpl implements ProofEditor {
     this.updateShareBannerTitleDisplay();
     this.setupTitleEditing(title);
 
+    const historyControls = this.createHistoryControls();
     const trackChangesToggle = this.createTrackChangesModeToggle();
 
     const avatars = document.createElement('span');
@@ -3592,7 +3703,7 @@ class ProofEditorImpl implements ProofEditor {
 
     const shareBtn = this.createShareMenuButton();
 
-    banner.replaceChildren(wordmark, separator, title, trackChangesToggle, syncStatusSep, syncStatusInline, avatars, agentSlot, shareBtn);
+    banner.replaceChildren(wordmark, separator, title, historyControls, trackChangesToggle, syncStatusSep, syncStatusInline, avatars, agentSlot, shareBtn);
     this.scheduleBannerLayoutUpdate();
   }
 
@@ -4842,6 +4953,8 @@ class ProofEditorImpl implements ProofEditor {
     this.shareBannerTitleEl = null;
     this.shareBannerEditModeButtonEl = null;
     this.shareBannerTrackChangesButtonEl = null;
+    this.shareBannerUndoButtonEl = null;
+    this.shareBannerRedoButtonEl = null;
     this.shareBannerAvatarsEl = null;
     this.shareBannerAgentSlotEl = null;
     this.shareBannerSyncDotEl = null;
@@ -5432,6 +5545,7 @@ class ProofEditorImpl implements ProofEditor {
 
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
+      const serializer = ctx.get(serializerCtx);
 
       // Store the original dispatchTransaction
       const originalDispatch = view.dispatch.bind(view);
@@ -5442,6 +5556,14 @@ class ProofEditorImpl implements ProofEditor {
           originalDispatch(transaction);
           if (transaction?.docChanged) {
             this.revision += 1;
+          }
+          const shouldCaptureUndoSnapshot = Boolean(transaction?.docChanged)
+            && transaction.getMeta?.('document-load') === undefined
+            && transaction.getMeta?.('addToHistory') !== false
+            && transaction.getMeta?.('history$') === undefined
+            && !this.isYjsChangeOriginTransaction(transaction);
+          if (shouldCaptureUndoSnapshot) {
+            this.recordUndoSnapshot(view, serializer);
           }
         };
         const beforeSelectionFrom = view.state.selection.from;
@@ -5818,7 +5940,7 @@ class ProofEditorImpl implements ProofEditor {
   /**
    * Load a document and apply embedded marks metadata.
    */
-  loadDocument(content: string, options?: { allowShareContentMutation?: boolean }): void {
+  loadDocument(content: string, options?: { allowShareContentMutation?: boolean; preserveHistory?: boolean }): void {
     if (!this.editor) {
       console.error('[loadDocument] Editor not initialized');
       return;
@@ -5957,7 +6079,7 @@ class ProofEditorImpl implements ProofEditor {
         }
 
         if (markTr.steps.length > 0) {
-          view.dispatch(markTr);
+          view.dispatch(markTr.setMeta('addToHistory', false));
         }
 
         return metadata;
@@ -5969,7 +6091,8 @@ class ProofEditorImpl implements ProofEditor {
       // Replace the entire document (mark as document-load to skip human authorship tracking)
       let tr = view.state.tr
         .replaceWith(0, view.state.doc.content.size, newDoc.content)
-        .setMeta('document-load', true);
+        .setMeta('document-load', true)
+        .setMeta('addToHistory', false);
       if (options?.allowShareContentMutation) {
         tr = tr.setMeta(SHARE_CONTENT_FILTER_ALLOW_META, true);
       }
@@ -6002,8 +6125,14 @@ class ProofEditorImpl implements ProofEditor {
       setMarkMetadata(view, markMetadata);
 
       // Trigger heatmap refresh
-      const heatmapTr = view.state.tr.setMeta('heatmapUpdate', true);
+      const heatmapTr = view.state.tr
+        .setMeta('heatmapUpdate', true)
+        .setMeta('addToHistory', false);
       view.dispatch(heatmapTr);
+
+      if (!options?.preserveHistory) {
+        this.resetUndoSnapshots(view, ctx.get(serializerCtx));
+      }
 
     });
     this.suppressMarksSync = false;
@@ -6731,6 +6860,128 @@ class ProofEditorImpl implements ProofEditor {
 
     console.log('[executeBatch] Result:', result);
     return result;
+  }
+
+  private serializeUndoSnapshot(
+    view: EditorView,
+    serializer: any
+  ): string | null {
+    try {
+      const markdown = this.normalizeMarkdownForRuntime(serializer(view.state.doc));
+      const metadata = getMarkMetadataForDisk(view.state);
+      return embedMarks(markdown, metadata);
+    } catch (error) {
+      const details = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      console.warn('[undoSnapshot] Failed to serialize current state:', details);
+      return null;
+    }
+  }
+
+  private resetUndoSnapshots(view: EditorView, serializer: any): void {
+    const snapshot = this.serializeUndoSnapshot(view, serializer);
+    this.currentUndoSnapshot = snapshot;
+    this.undoSnapshotStack = [];
+    this.redoSnapshotStack = [];
+    this.updateShareBannerHistoryDisplay();
+  }
+
+  private ensureUndoSnapshotInitialized(): void {
+    if (this.currentUndoSnapshot || !this.editor) return;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      this.resetUndoSnapshots(view, ctx.get(serializerCtx));
+    });
+  }
+
+  private recordUndoSnapshot(view: EditorView, serializer: any): void {
+    if (this.suppressUndoSnapshotCapture) return;
+    const snapshot = this.serializeUndoSnapshot(view, serializer);
+    if (!snapshot || snapshot === this.currentUndoSnapshot) return;
+
+    if (this.currentUndoSnapshot) {
+      this.undoSnapshotStack.push(this.currentUndoSnapshot);
+      if (this.undoSnapshotStack.length > 100) {
+        this.undoSnapshotStack.shift();
+      }
+    }
+    this.currentUndoSnapshot = snapshot;
+    this.redoSnapshotStack = [];
+    this.updateShareBannerHistoryDisplay();
+  }
+
+  private restoreUndoSnapshot(snapshot: string): boolean {
+    if (!this.editor) return false;
+
+    this.suppressUndoSnapshotCapture = true;
+    try {
+      this.loadDocument(snapshot, {
+        allowShareContentMutation: this.isShareMode,
+        preserveHistory: true,
+      });
+      this.scheduleContentSync();
+      this.updateShareBannerHistoryDisplay();
+      return true;
+    } finally {
+      this.suppressUndoSnapshotCapture = false;
+    }
+  }
+
+  undo(): boolean {
+    if (!this.editor || this.isReadOnly || this.reviewLockCount > 0) {
+      return false;
+    }
+
+    if (this.undoSnapshotStack.length > 0) {
+      const snapshot = this.undoSnapshotStack.pop() ?? null;
+      if (snapshot) {
+        if (this.currentUndoSnapshot) {
+          this.redoSnapshotStack.push(this.currentUndoSnapshot);
+        }
+        this.currentUndoSnapshot = snapshot;
+        return this.restoreUndoSnapshot(snapshot);
+      }
+    }
+
+    let handled = false;
+    this.editor.action((ctx) => {
+      if (this.collabEnabled) {
+        const view = ctx.get(editorViewCtx);
+        handled = collabUndo(view.state);
+        return;
+      }
+      const commands = ctx.get(commandsCtx);
+      handled = commands.call(undoCommand.key);
+    });
+    return handled;
+  }
+
+  redo(): boolean {
+    if (!this.editor || this.isReadOnly || this.reviewLockCount > 0) {
+      return false;
+    }
+
+    if (this.redoSnapshotStack.length > 0) {
+      const snapshot = this.redoSnapshotStack.pop() ?? null;
+      if (snapshot) {
+        if (this.currentUndoSnapshot) {
+          this.undoSnapshotStack.push(this.currentUndoSnapshot);
+        }
+        this.currentUndoSnapshot = snapshot;
+        return this.restoreUndoSnapshot(snapshot);
+      }
+    }
+
+    let handled = false;
+    this.editor.action((ctx) => {
+      if (this.collabEnabled) {
+        const view = ctx.get(editorViewCtx);
+        handled = collabRedo(view.state);
+        return;
+      }
+      const commands = ctx.get(commandsCtx);
+      handled = commands.call(redoCommand.key);
+    });
+    return handled;
   }
 
   // =====================

@@ -1047,7 +1047,9 @@ export function isSuggestionsEnabled(state: EditorState): boolean {
  * Enable suggestions
  */
 export function enableSuggestions(view: { state: EditorState; dispatch: (tr: Transaction) => void }): void {
-  const tr = view.state.tr.setMeta(suggestionsPluginKey, { enabled: true });
+  const tr = view.state.tr
+    .setMeta(suggestionsPluginKey, { enabled: true })
+    .setMeta('addToHistory', false);
   view.dispatch(tr);
 }
 
@@ -1055,7 +1057,9 @@ export function enableSuggestions(view: { state: EditorState; dispatch: (tr: Tra
  * Disable suggestions
  */
 export function disableSuggestions(view: { state: EditorState; dispatch: (tr: Transaction) => void }): void {
-  const tr = view.state.tr.setMeta(suggestionsPluginKey, { enabled: false });
+  const tr = view.state.tr
+    .setMeta(suggestionsPluginKey, { enabled: false })
+    .setMeta('addToHistory', false);
   view.dispatch(tr);
 }
 

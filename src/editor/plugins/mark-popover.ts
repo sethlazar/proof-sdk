@@ -84,9 +84,13 @@ type MobileCommentData = {
 
 type TouchSafeButtonOptions = {
   preventTouchPointerDown?: boolean;
+  preventMousePointerDown?: boolean;
+  preventMouseDown?: boolean;
   stopPointerDownPropagation?: boolean;
+  stopMouseDownPropagation?: boolean;
   stopClickPropagation?: boolean;
   onPointerDown?: (event: PointerEvent) => void;
+  onMouseDown?: (event: MouseEvent) => void;
 };
 
 function formatTimestamp(iso: string | undefined): string {
@@ -143,19 +147,36 @@ function installTouchSafeButton(
 ): void {
   const {
     preventTouchPointerDown = true,
+    preventMousePointerDown = false,
+    preventMouseDown = false,
     stopPointerDownPropagation = true,
+    stopMouseDownPropagation = true,
     stopClickPropagation = true,
     onPointerDown,
+    onMouseDown,
   } = options;
 
   button.addEventListener('pointerdown', event => {
-    if (preventTouchPointerDown && event.pointerType === 'touch') {
+    if (
+      (preventTouchPointerDown && event.pointerType === 'touch')
+      || (preventMousePointerDown && event.pointerType === 'mouse')
+    ) {
       event.preventDefault();
     }
     if (stopPointerDownPropagation) {
       event.stopPropagation();
     }
     onPointerDown?.(event);
+  });
+
+  button.addEventListener('mousedown', event => {
+    if (preventMouseDown) {
+      event.preventDefault();
+    }
+    if (stopMouseDownPropagation) {
+      event.stopPropagation();
+    }
+    onMouseDown?.(event);
   });
 
   button.addEventListener('click', event => {
@@ -2055,6 +2076,9 @@ class MarkPopoverController {
     installTouchSafeButton(applyButton, () => {
       if (!canEdit) return;
       this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId);
+    }, {
+      preventMousePointerDown: true,
+      preventMouseDown: true,
     });
 
     const rejectButton = document.createElement('button');
@@ -2064,6 +2088,9 @@ class MarkPopoverController {
     installTouchSafeButton(rejectButton, () => {
       if (!canEdit) return;
       this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId);
+    }, {
+      preventMousePointerDown: true,
+      preventMouseDown: true,
     });
 
     if (canEdit) {
@@ -2077,6 +2104,9 @@ class MarkPopoverController {
     previousButton.title = 'Previous change (Cmd/Ctrl+Alt+[';
     installTouchSafeButton(previousButton, () => {
       this.navigateToSuggestion(previousMarkId);
+    }, {
+      preventMousePointerDown: true,
+      preventMouseDown: true,
     });
     previousButton.disabled = !previousMarkId;
     actions.appendChild(previousButton);
@@ -2087,6 +2117,9 @@ class MarkPopoverController {
     nextButton.title = 'Next change (Cmd/Ctrl+Alt+])';
     installTouchSafeButton(nextButton, () => {
       this.navigateToSuggestion(nextMarkId);
+    }, {
+      preventMousePointerDown: true,
+      preventMouseDown: true,
     });
     nextButton.disabled = !nextMarkId;
     actions.appendChild(nextButton);
@@ -2096,6 +2129,9 @@ class MarkPopoverController {
     closeButton.textContent = 'Close';
     installTouchSafeButton(closeButton, () => {
       this.close();
+    }, {
+      preventMousePointerDown: true,
+      preventMouseDown: true,
     });
     actions.appendChild(closeButton);
 
