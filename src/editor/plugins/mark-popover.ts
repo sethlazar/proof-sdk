@@ -189,21 +189,98 @@ function getTopViewportInset(margin: number): number {
   return inset;
 }
 
-function getAnchorBox(view: EditorView, anchor: MarkRange) {
-  const from = view.coordsAtPos(anchor.from);
-  const to = view.coordsAtPos(anchor.to);
+function escapeAttributeSelectorValue(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value);
+  }
+  return value.replace(/[^a-zA-Z0-9_-]/g, (char) => `\\${char}`);
+}
+
+function unionClientRects(rects: DOMRect[]): DOMRect | null {
+  if (rects.length === 0) return null;
+  const top = Math.min(...rects.map((rect) => rect.top));
+  const bottom = Math.max(...rects.map((rect) => rect.bottom));
+  const left = Math.min(...rects.map((rect) => rect.left));
+  const right = Math.max(...rects.map((rect) => rect.right));
+  return {
+    x: left,
+    y: top,
+    top,
+    bottom,
+    left,
+    right,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top),
+    toJSON: () => ({ top, bottom, left, right, width: Math.max(0, right - left), height: Math.max(0, bottom - top) }),
+  } as DOMRect;
+}
+
+function getVisibleRenderedMarkBox(view: EditorView, markId: string | null | undefined): DOMRect | null {
+  if (!markId) return null;
+  const escapedMarkId = escapeAttributeSelectorValue(markId);
+  const elements = Array.from(
+    view.dom.querySelectorAll(`[data-mark-id="${escapedMarkId}"]`)
+  ) as HTMLElement[];
+  const visibleRects = elements
+    .map((element) => {
+      if (typeof element.getBoundingClientRect !== 'function') return null;
+      const style = window.getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return null;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 && rect.height <= 0) return null;
+      return rect;
+    })
+    .filter((rect): rect is DOMRect => Boolean(rect));
+  return unionClientRects(visibleRects);
+}
+
+function getCoordsAtVisiblePos(view: EditorView, pos: number): { top: number; bottom: number; left: number; right: number } | null {
+  const maxPos = view.state.doc.content.size;
+  const candidates = [pos, Math.max(0, pos - 1), Math.min(maxPos, pos + 1)];
+  const seen = new Set<number>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      const coords = view.coordsAtPos(candidate);
+      if ([coords.top, coords.bottom, coords.left, coords.right].every((value) => Number.isFinite(value))) {
+        return coords;
+      }
+    } catch {
+      // Try a nearby visible position instead.
+    }
+  }
+  return null;
+}
+
+function getAnchorBox(view: EditorView, anchor: MarkRange, markId?: string | null) {
+  const renderedBox = getVisibleRenderedMarkBox(view, markId);
+  if (renderedBox) {
+    return {
+      top: renderedBox.top,
+      bottom: renderedBox.bottom,
+      left: renderedBox.left,
+      right: renderedBox.right,
+    };
+  }
+
+  const from = getCoordsAtVisiblePos(view, anchor.from);
+  const to = getCoordsAtVisiblePos(view, anchor.to);
+  if (!from || !to) {
+    throw new Error('Could not resolve a visible anchor box');
+  }
   return {
     top: Math.min(from.top, to.top),
     bottom: Math.max(from.bottom, to.bottom),
     left: Math.min(from.left, to.left),
-    right: Math.max(from.right, to.right)
+    right: Math.max(from.right, to.right),
   };
 }
 
-function positionPopover(element: HTMLElement, view: EditorView, anchor: MarkRange | null): void {
+function positionPopover(element: HTMLElement, view: EditorView, anchor: MarkRange | null, markId?: string | null): void {
   if (!anchor) return;
   try {
-    const anchorBox = getAnchorBox(view, anchor);
+    const anchorBox = getAnchorBox(view, anchor, markId);
     if (typeof view.dom.getBoundingClientRect !== 'function') return;
     if (typeof element.getBoundingClientRect !== 'function') return;
     const editorRect = view.dom.getBoundingClientRect();
@@ -259,10 +336,10 @@ function shouldUseDesktopSuggestionPanel(): boolean {
   return window.innerWidth > 900;
 }
 
-function positionSidePanel(element: HTMLElement, view: EditorView, anchor: MarkRange | null): void {
+function positionSidePanel(element: HTMLElement, view: EditorView, anchor: MarkRange | null, markId?: string | null): void {
   if (!anchor) return;
   try {
-    const anchorBox = getAnchorBox(view, anchor);
+    const anchorBox = getAnchorBox(view, anchor, markId);
     if (typeof view.dom.getBoundingClientRect !== 'function') return;
     if (typeof element.getBoundingClientRect !== 'function') return;
     const editorRect = view.dom.getBoundingClientRect();
@@ -590,9 +667,9 @@ class MarkPopoverController {
       if (!anchor) continue;
 
       try {
-        const coords = this.view.coordsAtPos(anchor.from);
+        const anchorBox = getAnchorBox(this.view, anchor, mark.id);
         const relativeTop = clamp(
-          Math.round(coords.top - editorRect.top),
+          Math.round(anchorBox.top - editorRect.top),
           0,
           Math.max(0, Math.round(editorRect.height - 20)),
         );
@@ -1371,9 +1448,9 @@ class MarkPopoverController {
 
     if (this.mode && this.anchor) {
       if (this.renderMode === 'legacy-popover') {
-        positionPopover(this.popover, view, this.anchor);
+        positionPopover(this.popover, view, this.anchor, this.activeMarkId);
       } else if (this.renderMode === 'desktop-side-panel') {
-        positionSidePanel(this.popover, view, this.anchor);
+        positionSidePanel(this.popover, view, this.anchor, this.activeMarkId);
       }
       this.updateSheetViewportOffset();
     }
@@ -1512,11 +1589,11 @@ class MarkPopoverController {
     if (this.renderMode === 'legacy-popover') {
       this.popover.classList.remove('mark-popover-sheet');
       this.backdrop.style.display = 'none';
-      positionPopover(this.popover, this.view, this.anchor);
+      positionPopover(this.popover, this.view, this.anchor, this.activeMarkId);
     } else if (this.renderMode === 'desktop-side-panel') {
       this.popover.classList.remove('mark-popover-sheet');
       this.backdrop.style.display = 'none';
-      positionSidePanel(this.popover, this.view, this.anchor);
+      positionSidePanel(this.popover, this.view, this.anchor, this.activeMarkId);
     } else {
       this.popover.classList.add('mark-popover-sheet');
       this.backdrop.style.display = 'block';
@@ -1610,11 +1687,11 @@ class MarkPopoverController {
   private ensureAnchorVisible(): void {
     if (!this.anchor) return;
     try {
-      const coords = this.view.coordsAtPos(this.anchor.from);
+      const anchorBox = getAnchorBox(this.view, this.anchor, this.activeMarkId);
       const safeTop = getTopViewportInset(16);
       const safeBottom = window.innerHeight - (this.renderMode === 'mobile-sheet' ? 260 : 24);
-      if (coords.top < safeTop || coords.bottom > safeBottom) {
-        const target = Math.max(0, window.scrollY + coords.top - Math.round(window.innerHeight * 0.3));
+      if (anchorBox.top < safeTop || anchorBox.bottom > safeBottom) {
+        const target = Math.max(0, window.scrollY + anchorBox.top - Math.round(window.innerHeight * 0.3));
         window.scrollTo({ top: target, behavior: 'smooth' });
       }
     } catch {

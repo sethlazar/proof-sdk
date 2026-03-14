@@ -3280,6 +3280,124 @@ test('accept preserves leading whitespace for insert suggestions', () => {
   );
 });
 
+test('accept finalizes plain live insert suggestions without reapplying the text', () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { content: 'inline*', group: 'block' },
+      text: { group: 'inline' },
+    },
+    marks: {
+      proofSuggestion: {
+        attrs: {
+          id: { default: null },
+          kind: { default: 'insert' },
+          by: { default: 'unknown' },
+          status: { default: 'pending' },
+          content: { default: null },
+          createdAt: { default: null },
+          updatedAt: { default: null },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+      proofAuthored: {
+        attrs: {
+          by: { default: 'unknown' },
+        },
+        inclusive: false,
+        spanning: true,
+      },
+    },
+  });
+
+  const markId = 'm-live-insert-finalize';
+  const insertedText = 'delta';
+  const suggestionMark = schema.marks.proofSuggestion.create({
+    id: markId,
+    kind: 'insert',
+    by: 'human:minty',
+  });
+
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        if (meta?.type === 'SET_ACTIVE') {
+          return { ...value, activeMarkId: meta.markId ?? null };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema,
+    doc: schema.node('doc', null, [
+      schema.node('paragraph', null, [
+        schema.text('Alpha '),
+        schema.text(insertedText, [suggestionMark]),
+        schema.text(' gamma'),
+      ]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'insert',
+        by: 'human:minty',
+        createdAt: new Date('2026-03-15T00:00:00.000Z').toISOString(),
+        content: insertedText,
+        status: 'pending',
+      },
+    },
+  }));
+
+  const parser = (_markdown: string) =>
+    schema.node('doc', null, [
+      schema.node('paragraph', null, [schema.text(insertedText)]),
+    ]);
+
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const accepted = acceptMark(view, markId, parser);
+  assert(accepted, 'Accept should succeed for a live plain-text insertion');
+  assertEqual(
+    state.doc.textBetween(0, state.doc.content.size, '\n', '\n'),
+    'Alpha delta gamma',
+    'Expected accept to preserve the visible inserted text',
+  );
+  assertEqual(Object.keys(getMarkMetadata(state)).length, 0, 'Expected accept to clear the pending insertion metadata');
+
+  let suggestionCount = 0;
+  let authoredCount = 0;
+  state.doc.descendants((node) => {
+    if (!node.isText) return true;
+    for (const mark of node.marks) {
+      if (mark.type.name === 'proofSuggestion') suggestionCount += 1;
+      if (mark.type.name === 'proofAuthored') authoredCount += 1;
+    }
+    return true;
+  });
+  assertEqual(suggestionCount, 0, 'Expected accept to remove the insertion suggestion anchor');
+  assertEqual(authoredCount, 0, 'Expected plain-text insert accept not to leave behind authored styling marks');
+});
+
 test('accept preserves heading style for non-structural full-block replacements', () => {
   const schema = new Schema({
     nodes: {

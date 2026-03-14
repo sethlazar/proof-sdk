@@ -93,6 +93,9 @@ function run(): void {
       && popoverSource.includes("label: 'Replacement'")
       && popoverSource.includes('private getPreferredRenderMode(mode: PopoverMode): RenderMode {')
       && popoverSource.includes('positionSidePanel(')
+      && popoverSource.includes('function getVisibleRenderedMarkBox(')
+      && popoverSource.includes("view.dom.querySelectorAll(`[data-mark-id=\"${escapedMarkId}\"]`)")
+      && popoverSource.includes('const renderedBox = getVisibleRenderedMarkBox(view, markId);')
       && popoverSource.includes("source?: 'direct' | 'hover'")
       && popoverSource.includes("appendDetailRow('Original text', original")
       && popoverSource.includes("private renderSuggestionRail(): void {")
@@ -126,6 +129,13 @@ function run(): void {
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
       && popoverSource.includes('openForMark('),
     'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct open where appropriate, a simple-markup suggestion rail that still shows single-change counts, capture-phase review key handling, optimistic local review updates while share persistence settles, retry transient review actions, and active suggestion navigation that advances after review',
+  );
+  assert(
+    marksSource.includes('function insertAcceptNeedsMaterialization(')
+      && marksSource.includes('existingText === content')
+      && marksSource.includes('!insertAcceptNeedsMaterialization(content, effectiveParser)')
+      && marksSource.includes('tr = removeSuggestionAnchors(tr, new Set([mark.id]));'),
+    'Expected plain live insert accepts to finalize by clearing the suggestion anchor instead of reapplying already-visible text',
   );
   assert(
     editorSource.includes("return normalized.length > 0 && normalized !== 'Saved';")

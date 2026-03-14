@@ -2796,6 +2796,36 @@ function applyMarkdownInsert(
   return { ok: true, tr, appliedRange };
 }
 
+function insertAcceptNeedsMaterialization(
+  markdown: string,
+  parser: MarkdownParser | undefined,
+): boolean {
+  const parsedFragment = parseMarkdownFragment(parser, markdown);
+  if (!parsedFragment || parsedFragment.childCount === 0) {
+    return isStructuralMarkdown(markdown, parser);
+  }
+
+  const parsedFragmentForInsert = unwrapSingleParagraph(parsedFragment) ?? parsedFragment;
+  if (fragmentHasBlockNodes(parsedFragmentForInsert)) {
+    return true;
+  }
+
+  let needsMaterialization = false;
+  parsedFragmentForInsert.descendants((node) => {
+    if (!node.isText) {
+      needsMaterialization = true;
+      return false;
+    }
+    if (node.marks.length > 0) {
+      needsMaterialization = true;
+      return false;
+    }
+    return !needsMaterialization;
+  });
+
+  return needsMaterialization;
+}
+
 export function accept(view: EditorView, markId: string, parser?: MarkdownParser): boolean {
   const effectiveParser = resolveMarkdownParser(parser);
   const marks = getMarks(view.state);
@@ -2812,15 +2842,24 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
     case 'insert': {
       const markType = getMarkTypeForKind(view.state, 'insert');
       if (!markType) return false;
+      const data = mark.data as InsertData | undefined;
       for (const range of ranges) {
+        const existingText = getTextForRange(view.state.doc, range);
+        const content = data?.content ?? existingText;
+        if (
+          existingText === content
+          && !insertAcceptNeedsMaterialization(content, effectiveParser)
+        ) {
+          tr = removeSuggestionAnchors(tr, new Set([mark.id]));
+          applied = true;
+          continue;
+        }
         tr = tr.removeMark(range.from, range.to, markType);
-        const data = mark.data as InsertData | undefined;
-        const content = data?.content ?? getTextForRange(view.state.doc, range);
         const result = applyMarkdownInsert(view, tr, range, content, mark.by, effectiveParser);
         if (!result.ok) return false;
         tr = result.tr;
+        applied = true;
       }
-      applied = true;
       break;
     }
     case 'delete': {
