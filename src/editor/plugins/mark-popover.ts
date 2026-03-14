@@ -665,6 +665,10 @@ class MarkPopoverController {
         event.preventDefault();
         event.stopPropagation();
       });
+      button.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -799,6 +803,13 @@ class MarkPopoverController {
       return rejectSuggestion(this.view, markId);
     };
 
+    const runLocalActionOnly = (): boolean => {
+      if (action === 'accept') {
+        return acceptSuggestion(this.view, markId);
+      }
+      return false;
+    };
+
     const finish = (): void => {
       this.clearReviewActionRetryTimer();
       if (nextMarkId) {
@@ -817,16 +828,27 @@ class MarkPopoverController {
         ? () => proof.markRejectPersisted(markId)
         : null);
     if (persistedAction) {
-      setReviewButtonsBusy(true);
+      const optimisticApplied = runLocalActionOnly();
+      if (optimisticApplied) {
+        finish();
+      } else {
+        setReviewButtonsBusy(true);
+      }
       void persistedAction().then((success) => {
         if (!success) {
-          setReviewButtonsBusy(false);
+          if (!optimisticApplied) {
+            setReviewButtonsBusy(false);
+          }
           return;
         }
-        finish();
+        if (!optimisticApplied) {
+          finish();
+        }
       }).catch((error) => {
         console.error('[mark-popover] Persisted review action failed:', error);
-        setReviewButtonsBusy(false);
+        if (!optimisticApplied) {
+          setReviewButtonsBusy(false);
+        }
       });
       return;
     }
@@ -1898,7 +1920,9 @@ class MarkPopoverController {
     } else if (mark.kind === 'replace') {
       const data = mark.data as ReplaceData | undefined;
       const current = data?.content ?? '';
-      const original = typeof data?.originalQuote === 'string' ? data.originalQuote : '';
+      const original = typeof data?.originalQuote === 'string' && data.originalQuote.trim().length > 0
+        ? data.originalQuote
+        : (mark.quote ?? '');
       appendDetailRow('Original text', original, '#b91c1c');
       appendDetailRow('Edited text', current, '#15803d');
     } else if (mark.kind === 'delete') {

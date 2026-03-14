@@ -1,6 +1,8 @@
 import * as Y from 'yjs';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import type { Awareness } from 'y-protocols/awareness';
+import { prosemirrorToYXmlFragment } from 'y-prosemirror';
+import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 import { shareClient, type CollabSessionInfo, type ShareRole } from './share-client';
 import { shouldPreserveMissingLocalMark } from './marks-preservation';
 
@@ -707,6 +709,34 @@ export class CollabClient {
       this.unsyncedChanges = 1;
       this.emitSyncStatus();
     }
+  }
+
+  syncEditorState(doc: ProseMirrorNode, markdown: string): boolean {
+    if (!this.sessionRole || !this.canPersistDurableUpdates(this.sessionRole)) {
+      this.debugLog('skip-editor-sync-readonly', { markdownLength: markdown.length });
+      return false;
+    }
+    if (!this.ydoc || !this.markdownText) return false;
+
+    const fragment = this.ydoc.getXmlFragment('prosemirror');
+    const currentMarkdown = this.markdownText.toString();
+    const markdownChanged = currentMarkdown !== markdown;
+
+    this.ydoc.transact(() => {
+      if (fragment.length > 0) {
+        fragment.delete(0, fragment.length);
+      }
+      prosemirrorToYXmlFragment(doc as any, fragment as any);
+      if (markdownChanged && this.markdownText) {
+        applyYTextDiff(this.markdownText, markdown);
+      }
+    }, 'local-editor-sync');
+
+    if (this.unsyncedChanges === 0) {
+      this.unsyncedChanges = 1;
+      this.emitSyncStatus();
+    }
+    return true;
   }
 
   setMarksMetadata(marks: Record<string, unknown>): void {

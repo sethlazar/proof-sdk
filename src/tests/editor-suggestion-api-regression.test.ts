@@ -47,9 +47,10 @@ function run(): void {
       && keybindingsSource.includes("'Mod-Alt-]': navigateNextSuggestionCommand")
       && keybindingsSource.includes("'Mod-Alt-[': navigatePrevSuggestionCommand")
       && keybindingsSource.includes("'Mod-Shift-e': toggleSuggestionsCommand")
+      && keybindingsSource.includes('acceptSuggestionMark(view, activeId);')
       && keybindingsSource.includes('void proof.markAcceptPersisted(activeId);')
       && keybindingsSource.includes('void proof.markRejectPersisted(activeId);'),
-    'Expected dedicated keyboard shortcuts for accepting, rejecting, navigating, and toggling suggestions',
+    'Expected dedicated keyboard shortcuts for accepting, rejecting, navigating, and toggling suggestions, with optimistic local accept updates before share persistence finishes',
   );
   assert(
     editorSource.includes('private createTrackChangesModeToggle(): HTMLElement {')
@@ -88,11 +89,13 @@ function run(): void {
       && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId);")
       && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId);")
       && popoverSource.includes('const persistedAction = action === \'accept\'')
+      && popoverSource.includes('const optimisticApplied = runLocalActionOnly();')
+      && popoverSource.includes('return acceptSuggestion(this.view, markId);')
       && popoverSource.includes('setReviewButtonsBusy(true);')
       && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct open where appropriate, a simple-markup suggestion rail, capture-phase review key handling, retry transient review actions, and active suggestion navigation',
+    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct open where appropriate, a simple-markup suggestion rail, capture-phase review key handling, optimistic local review updates while share persistence settles, retry transient review actions, and active suggestion navigation',
   );
   assert(
     editorSource.includes("return normalized.length > 0 && normalized !== 'Saved';")
@@ -125,6 +128,12 @@ function run(): void {
     editorSource.includes("if (source === 'review-backfill') return true;")
       && editorSource.includes("this.publishProjectionMarkdown(view, projectionMarkdown, 'review-backfill');"),
     'Expected share review retries to republish the live projection markdown before retrying accept/reject',
+  );
+  assert(
+    editorSource.includes('private syncShareCollabStateFromView(')
+      && editorSource.includes('collabClient.syncEditorState(view.state.doc, this.normalizeMarkdownForCollab(markdown));')
+      && editorSource.includes('collabClient.setMarksMetadata(getMarkMetadataWithQuotes(view.state));'),
+    'Expected share review actions to force-sync the live editor state back into collab when markup changes without changing plain markdown',
   );
   assert(
     editorSource.includes('private notifyAuthorshipStatsUpdated(stats: ReturnType<typeof getAuthorshipStats>): void {')
@@ -168,8 +177,9 @@ function run(): void {
       && markAcceptPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
       && markAcceptPersistedBlock.includes('await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)')
       && markAcceptPersistedBlock.includes('success = acceptMark(view, markId, parser);')
-      && markAcceptPersistedBlock.includes('applyRemoteMarks(view, serverMarks, { hydrateAnchors: this.collabCanEdit });'),
-    'Expected markAcceptPersisted to retry after hydrating missing share suggestion metadata before reconciling local share-mode UI',
+      && markAcceptPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
+      && markAcceptPersistedBlock.includes('pruneMissingSuggestions: true'),
+    'Expected markAcceptPersisted to retry after hydrating missing share suggestion metadata and then prune resolved suggestions from the local share-mode UI',
   );
 
   const markRejectPersistedBlock = sliceBetween(editorSource, '  async markRejectPersisted(markId: string): Promise<boolean> {', '\n  /**\n   * Accept all pending suggestions\n   */');
@@ -178,8 +188,9 @@ function run(): void {
       && markRejectPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
       && markRejectPersistedBlock.includes('await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)')
       && markRejectPersistedBlock.includes('success = rejectMark(view, markId);')
-      && markRejectPersistedBlock.includes('applyRemoteMarks(view, serverMarks, { hydrateAnchors: this.collabCanEdit });'),
-    'Expected markRejectPersisted to retry after hydrating missing share suggestion metadata before reconciling local share-mode UI',
+      && markRejectPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
+      && markRejectPersistedBlock.includes('pruneMissingSuggestions: true'),
+    'Expected markRejectPersisted to retry after hydrating missing share suggestion metadata and then prune resolved suggestions from the local share-mode UI',
   );
   assert(
     editorSource.includes('private getShareSuggestionBackfillPlan(')
@@ -191,10 +202,11 @@ function run(): void {
       && editorSource.includes("this.publishProjectionMarkdown(view, projectionMarkdown, 'review-backfill');")
       && editorSource.includes('collabClient.setMarksMetadata(metadata as Record<string, StoredMark>);')
       && editorSource.includes('synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);')
+      && editorSource.includes('const pushed = await shareClient.pushUpdate(')
       && editorSource.includes('private async waitForShareSuggestionMetadata(')
       && editorSource.includes('expectedQuotes: Record<string, string> = {}')
       && editorSource.includes('return !expected || content.includes(expected);'),
-    'Expected share suggestion persistence to backfill the server-reported missing pending suggestions and wait for the live quote to exist server-side before retrying',
+    'Expected share suggestion persistence to backfill the server-reported missing pending suggestions, persist the live markdown plus marks when collab drift exists, and wait for the live quote to exist server-side before retrying',
   );
 
   const navigateNextSuggestionBlock = sliceBetween(editorSource, '  navigateToNextSuggestion(): string | null {', '\n  /**\n   * Navigate to the previous pending suggestion\n   */');

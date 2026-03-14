@@ -20,7 +20,7 @@ import {
   type CanonicalReadableDocument,
 } from './collab.js';
 import { mutateCanonicalDocument } from './canonical-document.js';
-import { canonicalizeStoredMarks } from '../src/formats/marks.js';
+import { canonicalizeStoredMarks, removeFinalizedSuggestionMetadata } from '../src/formats/marks.js';
 import {
   finalizeSuggestionThroughRehydration,
   type ProofMarkRehydrationFailure,
@@ -922,6 +922,107 @@ function addSuggestion(
     && Number(body.range.to) > Number(body.range.from)
     ? { from: Number(body.range.from), to: Number(body.range.to) }
     : null;
+
+  if (kind === 'replace') {
+    const content = body.content as string;
+    const nextMarkdown = buildAcceptedSuggestionMarkdown(doc.markdown, {
+      kind: 'replace',
+      quote,
+      content,
+    } as StoredMark);
+    if (nextMarkdown === null) {
+      return {
+        status: 409,
+        body: { success: false, code: 'ANCHOR_NOT_FOUND', error: 'Suggestion anchor quote not found in document' },
+      };
+    }
+
+    const normalizedContent = normalizeQuote(content);
+    const replacementStart = anchor.strippedStart;
+    const replacementEnd = replacementStart + normalizedContent.length;
+    const nextMarks: Record<string, StoredMark> = {
+      ...marks,
+      [id]: {
+        kind: 'replace',
+        by,
+        createdAt: now,
+        quote: normalizedContent,
+        originalQuote: quote,
+        content,
+        status: 'pending',
+        startRel: typeof body.startRel === 'string' && body.startRel.trim()
+          ? body.startRel.trim()
+          : `char:${replacementStart}`,
+        endRel: typeof body.endRel === 'string' && body.endRel.trim()
+          ? body.endRel.trim()
+          : `char:${replacementEnd}`,
+        ...(providedRange ? { range: providedRange } : { range: { from: replacementStart, to: replacementEnd } }),
+      },
+    };
+
+    const scrubbed = removeResurrectedMarksFromPayload(slug, nextMarks as unknown as Record<string, unknown>);
+    const normalizedMarks = canonicalizeStoredMarks(scrubbed.marks as Record<string, StoredMark>);
+    if (scrubbed.removed.length > 0) {
+      console.warn('[document-engine] removed tombstoned marks from persistence payload', {
+        slug,
+        removed: scrubbed.removed.length,
+        eventType: 'suggestion.replace.added',
+      });
+    }
+
+    const ok = updateDocumentAtomic(
+      slug,
+      doc.updated_at,
+      nextMarkdown,
+      normalizedMarks as unknown as Record<string, unknown>,
+    );
+    if (!ok) {
+      return {
+        status: 409,
+        body: {
+          success: false,
+          error: 'Document was modified concurrently; retry with latest state',
+        },
+      };
+    }
+
+    void applyCanonicalDocumentToCollab(slug, {
+      markdown: nextMarkdown,
+      marks: normalizedMarks as unknown as Record<string, unknown>,
+      source: 'engine',
+    }).catch((error) => {
+      console.error('[document-engine] Failed to sync pending replace suggestion to collab projection; invalidating collab state', { slug, error });
+      invalidateCollabDocument(slug);
+    });
+
+    const eventId = addDocumentEvent(slug, 'suggestion.replace.added', {
+      markId: id,
+      by,
+      quote,
+      content,
+    }, by);
+    refreshSnapshotForSlug(slug);
+    const updated = getDocumentBySlug(slug);
+    if (updated) {
+      void rebuildDocumentBlocks(updated, updated.markdown, updated.revision).catch((error) => {
+        console.error('[document-engine] Failed to rebuild block index after replace suggestion add:', { slug, error });
+      });
+    }
+    return {
+      status: 200,
+      body: {
+        success: true,
+        eventId,
+        markId: id,
+        shareState: updated?.share_state ?? doc.share_state,
+        updatedAt: updated?.updated_at ?? new Date().toISOString(),
+        content: updated?.markdown ?? nextMarkdown,
+        markdown: updated?.markdown ?? nextMarkdown,
+        marks: normalizedMarks,
+      },
+    };
+  }
+
   marks[id] = {
     kind,
     by,
@@ -973,13 +1074,14 @@ function updateSuggestionStatus(
   }
   const actor = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'owner';
   if (existing.status === status) {
+    const visibleMarks = removeFinalizedSuggestionMetadata(marks);
     return {
       status: 200,
       body: {
         success: true,
         shareState: doc.share_state,
         updatedAt: doc.updated_at,
-        marks,
+        marks: visibleMarks,
       },
     };
   }
@@ -988,6 +1090,7 @@ function updateSuggestionStatus(
     ...marks,
     [markId]: { ...existing, status },
   };
+  const visibleMarks = removeFinalizedSuggestionMetadata(nextMarks);
   let nextMarkdown = doc.markdown;
 
   if (status === 'accepted' && (existing.kind === 'insert' || existing.kind === 'delete' || existing.kind === 'replace')) {
@@ -1029,7 +1132,7 @@ function updateSuggestionStatus(
     const collabMarkdown = updated?.markdown ?? nextMarkdown;
     void applyCanonicalDocumentToCollab(slug, {
       markdown: collabMarkdown,
-      marks: nextMarks as unknown as Record<string, unknown>,
+      marks: visibleMarks as unknown as Record<string, unknown>,
       source: 'engine',
     }).catch((error) => {
       console.error('[document-engine] Failed to sync suggestion status to collab projection; invalidating collab state', { slug, status, error });
@@ -1050,7 +1153,7 @@ function updateSuggestionStatus(
       updatedAt: updated?.updated_at ?? new Date().toISOString(),
       content: updated?.markdown ?? nextMarkdown,
       markdown: updated?.markdown ?? nextMarkdown,
-      marks: nextMarks,
+      marks: visibleMarks,
     },
   };
 }

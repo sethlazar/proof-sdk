@@ -47,6 +47,10 @@ import {
   serializeMarkdown,
   summarizeParseError,
 } from './milkdown-headless.js';
+import {
+  buildProofSpanReplacementMap,
+  stripAllProofSpanTagsWithReplacements,
+} from './proof-span-strip.js';
 import { normalizeAgentScopedId } from '../src/shared/agent-identity.js';
 
 type HocuspocusInstance = {
@@ -1259,7 +1263,13 @@ function getFragmentPlainTextFromDoc(doc: Y.Doc): string {
     const fragment = doc.getXmlFragment('prosemirror');
     const parts: string[] = [];
     collectFragmentPlainText(fragment, parts);
-    return normalizeFragmentPlainText(parts.join(' '));
+    const rawFragmentText = stripEphemeralCollabSpans(parts.join(' '));
+    const marks = canonicalizeStoredMarks(encodeMarksMap(doc.getMap('marks')));
+    const sanitizedFragmentText = stripAllProofSpanTagsWithReplacements(
+      rawFragmentText,
+      buildProofSpanReplacementMap(marks),
+    );
+    return normalizeMarkdownForDriftComparison(sanitizedFragmentText);
   } catch {
     return '';
   }
@@ -1545,7 +1555,12 @@ async function deriveMarkdownProjectionFromFragment(doc: Y.Doc): Promise<string 
       doc.getXmlFragment('prosemirror') as any,
       parser.schema as any,
     ) as ProseMirrorNode;
-    return await serializeMarkdown(root);
+    const serialized = await serializeMarkdown(root);
+    const marks = canonicalizeStoredMarks(encodeMarksMap(doc.getMap('marks')));
+    return stripAllProofSpanTagsWithReplacements(
+      stripEphemeralCollabSpans(serialized),
+      buildProofSpanReplacementMap(marks),
+    );
   } catch (error) {
     console.error('[collab] failed to derive markdown from fragment for projection repair', {
       error: summarizeParseError(error),

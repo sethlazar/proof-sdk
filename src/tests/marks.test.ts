@@ -1625,6 +1625,74 @@ test('applyRemoteMarks removes existing suggestion anchors when server finalizes
   assert(!pluginState?.metadata?.[suggestionId], 'Finalized suggestion should be removed from metadata');
 });
 
+test('applyRemoteMarks can prune missing suggestion ids from authoritative share responses', () => {
+  const suggestionId = 's-pruned';
+  const suggestionMark = marksSchema.marks.proofSuggestion.create({
+    id: suggestionId,
+    kind: 'replace',
+    by: 'human:test',
+  });
+
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, [
+      marksSchema.text('Alpha '),
+      marksSchema.text('delta', [suggestionMark]),
+      marksSchema.text(' gamma'),
+    ]),
+  ]);
+
+  const metadata = {
+    [suggestionId]: {
+      kind: 'replace' as const,
+      by: 'human:test',
+      createdAt: new Date('2026-03-13T12:00:00.000Z').toISOString(),
+      quote: 'delta',
+      originalQuote: 'beta',
+      content: 'delta',
+      status: 'pending' as const,
+    },
+  };
+
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata, activeMarkId: null }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        if (meta?.type === 'SET_ACTIVE') {
+          return { ...value, activeMarkId: meta.markId ?? null };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  applyRemoteMarks(view, {}, { pruneMissingSuggestions: true });
+
+  assert(!getMarks(state).some((mark) => mark.id === suggestionId), 'Missing server suggestion should be removed from anchors');
+  const pluginState = marksPluginKey.getState(state) as { metadata: Record<string, unknown> } | undefined;
+  assert(!pluginState?.metadata?.[suggestionId], 'Missing server suggestion should be removed from metadata');
+  assertEqual(state.doc.textContent, 'Alpha delta gamma', 'Live replacement text should remain after local suggestion metadata is pruned');
+});
+
 test('mergePendingServerMarks keeps critical local fields when server metadata is partial', () => {
   const localMetadata = {
     s1: {
@@ -1753,6 +1821,43 @@ test('mergePendingServerMarks drops stale local suggestion metadata when server 
   });
 
   assert(!merged.s1, 'Finalized server suggestions should evict stale local pending metadata');
+});
+
+test('mergePendingServerMarks preserves live local replace edits over stale server snapshots', () => {
+  const merged = mergePendingServerMarks({
+    s1: {
+      kind: 'replace',
+      by: 'human:user',
+      createdAt: '2026-03-14T00:00:00.000Z',
+      content: 'delta',
+      originalQuote: 'beta',
+      quote: 'delta',
+      status: 'pending',
+      range: { from: 7, to: 12 },
+      startRel: 'char:6',
+      endRel: 'char:11',
+    },
+  }, {
+    s1: {
+      kind: 'replace',
+      by: 'human:user',
+      createdAt: '2026-03-14T00:00:00.000Z',
+      content: 'd',
+      originalQuote: 'beta',
+      quote: 'd',
+      status: 'pending',
+      range: { from: 7, to: 8 },
+      startRel: 'char:6',
+      endRel: 'char:7',
+    },
+  });
+
+  assertEqual(merged.s1?.content, 'delta', 'Expected local live replacement text to win during merge');
+  assertEqual(merged.s1?.quote, 'delta', 'Expected local live replacement quote to win during merge');
+  assertEqual(merged.s1?.range?.from, 7, 'Expected merged range start to follow the local live replacement');
+  assertEqual(merged.s1?.range?.to, 12, 'Expected merged range end to follow the local live replacement');
+  assertEqual(merged.s1?.startRel, 'char:6', 'Expected merged startRel to preserve the local live replacement anchor');
+  assertEqual(merged.s1?.endRel, 'char:11', 'Expected merged endRel to preserve the local live replacement anchor');
 });
 
 test('mergePendingServerMarks preserves locally resolved comments when tombstoned', () => {
@@ -4728,6 +4833,77 @@ test('accept keeps the live replacement text and clears the suggestion', () => {
     'Expected accept to keep the live replacement text in place',
   );
   assert(!getMarkMetadata(state)[markId], 'Expected accept to remove live replace metadata');
+});
+
+test('accept clears live replacement anchors even when mark attrs are stale', () => {
+  const markId = 'replace-live-accept-stale-attrs';
+  const replaceMark = marksSchema.marks.proofSuggestion.create({
+    id: markId,
+    kind: 'replace',
+    by: 'human:user',
+    content: 'd',
+    status: 'pending',
+    createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+  });
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null, composeAnchorRange: null, suggestionDisplayMode: 'all' }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc: marksSchema.node('doc', null, [
+      marksSchema.node('paragraph', null, [
+        marksSchema.text('Before '),
+        marksSchema.text('planet', [replaceMark]),
+        marksSchema.text(' after'),
+      ]),
+    ]),
+    plugins: [marksStatePlugin],
+  });
+
+  state = state.apply(state.tr.setMeta(marksPluginKey, {
+    type: 'SET_METADATA',
+    metadata: {
+      [markId]: {
+        kind: 'replace',
+        by: 'human:user',
+        createdAt: new Date('2026-03-12T00:00:00.000Z').toISOString(),
+        content: 'planet',
+        originalQuote: 'world',
+        quote: 'planet',
+        status: 'pending',
+      },
+    },
+  }));
+
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  const accepted = acceptMark(view, markId);
+  assert(accepted, 'Accept should succeed for a live replace suggestion with stale attrs');
+  assertEqual(
+    state.doc.textBetween(0, state.doc.content.size, '\n', '\n'),
+    'Before planet after',
+    'Expected accept to keep the live replacement text in place',
+  );
+  assert(!getMarkMetadata(state)[markId], 'Expected accept to remove stale live replace metadata');
+  assertEqual(getPendingSuggestions(getMarks(state)).length, 0, 'Expected accept to remove the stale live replace anchor');
 });
 
 test('simple markup keeps live replace suggestions editable while indicating a hidden change', () => {

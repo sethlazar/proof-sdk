@@ -1674,7 +1674,36 @@ export function mergePendingServerMarks(
       if (kind === 'comment' && isResolvedTombstone && merged[id]?.resolved === true) {
         merged[id] = mergeStoredMarkWithFallback(merged[id], { ...serverMark, resolved: true });
       } else if (!isDeletedTombstone) {
-        merged[id] = mergeStoredMarkWithFallback(merged[id], serverMark);
+        const localMark = merged[id];
+        const shouldPreferLocalPendingSuggestion = (
+          !!localMark
+          && (kind === 'insert' || kind === 'replace')
+          && localMark.kind === kind
+          && localMark.status === 'pending'
+          && serverMark.status === 'pending'
+        );
+        const mergedMark = mergeStoredMarkWithFallback(localMark, serverMark);
+        if (shouldPreferLocalPendingSuggestion && localMark) {
+          if (typeof localMark.content === 'string' && localMark.content.length > 0) {
+            mergedMark.content = localMark.content;
+          }
+          if (typeof localMark.quote === 'string' && localMark.quote.length > 0) {
+            mergedMark.quote = localMark.quote;
+          }
+          if (localMark.range) {
+            mergedMark.range = localMark.range;
+          }
+          if (localMark.startRel) {
+            mergedMark.startRel = localMark.startRel;
+          }
+          if (localMark.endRel) {
+            mergedMark.endRel = localMark.endRel;
+          }
+          if (typeof localMark.originalQuote === 'string' && localMark.originalQuote.length > 0) {
+            mergedMark.originalQuote = localMark.originalQuote;
+          }
+        }
+        merged[id] = mergedMark;
       }
       continue;
     }
@@ -1719,10 +1748,11 @@ export function setMarkMetadata(view: EditorView, metadata: Record<string, Store
 export function applyRemoteMarks(
   view: EditorView,
   metadata: Record<string, StoredMark>,
-  options?: { hydrateAnchors?: boolean }
+  options?: { hydrateAnchors?: boolean; pruneMissingSuggestions?: boolean }
 ): void {
   const canonicalMetadata = canonicalizeStoredMarks(metadata);
   const hydrateAnchors = options?.hydrateAnchors !== false;
+  const pruneMissingSuggestions = options?.pruneMissingSuggestions === true;
   const existingIds = getProofAnchorIds(view.state.doc);
   let tr = view.state.tr;
   const now = Date.now();
@@ -1732,13 +1762,14 @@ export function applyRemoteMarks(
   const finalizedSuggestionIds = new Set<string>();
   let authoredHydrationFailures = 0;
   let authoredHydrationSuppressed = 0;
+  const existingMetadata = getMarkMetadata(view.state);
 
   // Merge with existing metadata so we don't lose local marks.
   // For tombstoned comment marks, we merge metadata (replies, thread, etc.)
   // but preserve the local resolved state to prevent stale server data from
   // flipping resolved comments back to unresolved.
   // For tombstoned suggestion marks, skip entirely (accepted/rejected locally).
-  const merged = canonicalizeStoredMarks({ ...getMarkMetadata(view.state) });
+  const merged = canonicalizeStoredMarks({ ...existingMetadata });
   const filteredEntries: [string, StoredMark][] = [];
   for (const [id, stored] of allEntries) {
     const status = stored?.status;
@@ -1768,6 +1799,16 @@ export function applyRemoteMarks(
     }
     merged[id] = mergeStoredMarkWithFallback(merged[id], stored);
     filteredEntries.push([id, stored]);
+  }
+
+  if (pruneMissingSuggestions) {
+    for (const [id, stored] of Object.entries(existingMetadata)) {
+      const kind = stored?.kind;
+      if (kind !== 'insert' && kind !== 'delete' && kind !== 'replace') continue;
+      if (canonicalMetadata[id]) continue;
+      finalizedSuggestionIds.add(id);
+      delete merged[id];
+    }
   }
 
   tr = removeSuggestionAnchors(tr, finalizedSuggestionIds);
@@ -2793,12 +2834,6 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
       const data = mark.data as ReplaceData | undefined;
       if (ranges.length !== 1) return false;
       const range = ranges[0];
-      const markType = getMarkTypeForKind(view.state, 'replace');
-      if (markType) {
-        // Ensure the accepted suggestion mark clears even when the replacement content is a no-op.
-        const attrs = buildSuggestionAttrs(mark.id, 'replace', mark.by, metadata[mark.id]);
-        tr = tr.removeMark(range.from, range.to, markType.create(attrs));
-      }
       const replacementContent =
         (typeof data?.content === 'string' && data.content.trim().length > 0)
           ? data.content
@@ -2809,6 +2844,7 @@ export function accept(view: EditorView, markId: string, parser?: MarkdownParser
       if (existingText === replacementContent) {
         // A no-op accept should only clear the suggestion mark and preserve any
         // nested comments/review marks already anchored inside the range.
+        tr = removeSuggestionAnchors(tr, new Set([mark.id]));
         applied = true;
         break;
       }
@@ -3495,6 +3531,7 @@ function injectGlowStyles(): void {
     }
     .proof-share-welcome-toast {
       max-width: min(420px, calc(100vw - 24px));
+      pointer-events: none;
     }
     @media (prefers-color-scheme: dark) {
       .proof-external-change-toast {

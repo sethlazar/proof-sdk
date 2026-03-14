@@ -4939,6 +4939,67 @@ class ProofEditorImpl implements ProofEditor {
     this.pendingProjectionPublish = false;
   }
 
+  private repairCollabStateFromEditor(
+    view: import('@milkdown/kit/prose/view').EditorView,
+    markdown: string,
+  ): boolean {
+    if (!this.collabEnabled || !this.collabCanEdit) return false;
+
+    const ydoc = collabClient.getYDoc() as {
+      getXmlFragment?: (name: string) => unknown;
+      getText?: (name: string) => { toString(): string };
+    } | null;
+    if (!ydoc?.getXmlFragment || !ydoc.getText) return false;
+
+    const editorText = this.normalizeCollabHydrationText(
+      view.state.doc.textBetween(0, view.state.doc.content.size, '\n', '\n'),
+    );
+    const nextMarkdown = this.normalizeMarkdownForCollab(markdown);
+
+    let fragment: unknown;
+    let liveMarkdown = '';
+    try {
+      fragment = ydoc.getXmlFragment('prosemirror');
+      liveMarkdown = ydoc.getText('markdown').toString();
+    } catch {
+      return false;
+    }
+
+    const fragmentText = this.getYjsFragmentHydrationText(fragment);
+    const fragmentMismatch = fragmentText !== editorText;
+    const markdownMismatch = liveMarkdown !== nextMarkdown;
+    if (!fragmentMismatch && !markdownMismatch) return false;
+
+    try {
+      const repaired = collabClient.syncEditorState(view.state.doc, nextMarkdown);
+      if (repaired) {
+        this.pendingProjectionPublish = false;
+      }
+      return repaired;
+    } catch (error) {
+      console.warn('[share] failed to repair live collab state from editor', error);
+      return false;
+    }
+  }
+
+  private syncShareCollabStateFromView(
+    view: import('@milkdown/kit/prose/view').EditorView,
+    serializeMarkdown: (doc: import('@milkdown/kit/prose/model').Node) => string,
+  ): void {
+    if (!this.collabEnabled || !this.collabCanEdit) return;
+
+    try {
+      const markdown = this.normalizeMarkdownForRuntime(serializeMarkdown(view.state.doc));
+      if (!markdown) return;
+      this.lastMarkdown = markdown;
+      collabClient.syncEditorState(view.state.doc, this.normalizeMarkdownForCollab(markdown));
+      collabClient.setMarksMetadata(getMarkMetadataWithQuotes(view.state));
+      this.pendingProjectionPublish = false;
+    } catch (error) {
+      console.warn('[share] failed to sync review result into collab state', error);
+    }
+  }
+
   private flushPendingProjectionMarkdown(): void {
     if (!this.pendingProjectionPublish || !this.editor || !this.canPublishProjectionMarkdownNow()) return;
     this.editor.action((ctx) => {
@@ -5526,6 +5587,9 @@ class ProofEditorImpl implements ProofEditor {
         try {
           this.lastMarkdown = markdown;
           this.sendDocumentSnapshot(view, markdown);
+          if (this.collabEnabled && this.collabCanEdit) {
+            this.repairCollabStateFromEditor(view, markdown);
+          }
           if (this.collabEnabled && this.collabCanEdit && this.shouldPublishProjectionMarkdown('content-sync')) {
             this.publishProjectionMarkdown(view, markdown, 'content-sync');
             const metadata = getMarkMetadataWithQuotes(view.state);
@@ -8746,12 +8810,14 @@ class ProofEditorImpl implements ProofEditor {
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       const parser = ctx.get(parserCtx);
+      const serializer = ctx.get(serializerCtx);
       success = acceptMark(view, markId, parser);
       console.log('[markAccept] Accepted:', success);
       if (success && this.isShareMode) {
         const metadata = getMarkMetadataWithQuotes(view.state);
         this.lastReceivedServerMarks = { ...metadata };
         this.initialMarksSynced = true;
+        this.syncShareCollabStateFromView(view, serializer);
 
         const actor = getCurrentActor();
         void shareClient.acceptSuggestion(markId, actor).then((result) => {
@@ -8795,12 +8861,14 @@ class ProofEditorImpl implements ProofEditor {
     let success = false;
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
+      const serializer = ctx.get(serializerCtx);
       success = rejectMark(view, markId);
       console.log('[markReject] Rejected:', success);
       if (success && this.isShareMode) {
         const metadata = getMarkMetadataWithQuotes(view.state);
         this.lastReceivedServerMarks = { ...metadata };
         this.initialMarksSynced = true;
+        this.syncShareCollabStateFromView(view, serializer);
 
         const actor = getCurrentActor();
         void shareClient.rejectSuggestion(markId, actor).then((result) => {
@@ -8916,6 +8984,17 @@ class ProofEditorImpl implements ProofEditor {
       synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);
     }
 
+    if (!synced && projectionMarkdown) {
+      const pushed = await shareClient.pushUpdate(
+        projectionMarkdown,
+        metadata as Record<string, StoredMark>,
+        actor,
+      );
+      if (pushed) {
+        synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);
+      }
+    }
+
     if (!synced) {
       const pushed = await shareClient.pushMarks(metadata, actor);
       if (!pushed) return false;
@@ -9016,6 +9095,7 @@ class ProofEditorImpl implements ProofEditor {
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       const parser = ctx.get(parserCtx);
+      const serializer = ctx.get(serializerCtx);
       if (this.isShareMode) this.suppressMarksSync = true;
       try {
         success = acceptMark(view, markId, parser);
@@ -9024,7 +9104,14 @@ class ProofEditorImpl implements ProofEditor {
       }
 
       if (serverMarks) {
-        applyRemoteMarks(view, serverMarks, { hydrateAnchors: this.collabCanEdit });
+        applyRemoteMarks(view, serverMarks, {
+          hydrateAnchors: this.collabCanEdit,
+          pruneMissingSuggestions: true,
+        });
+      }
+
+      if (this.isShareMode && (success || Boolean(serverMarks))) {
+        this.syncShareCollabStateFromView(view, serializer);
       }
 
       if (success) {
@@ -9071,6 +9158,7 @@ class ProofEditorImpl implements ProofEditor {
     let success = false;
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
+      const serializer = ctx.get(serializerCtx);
       if (this.isShareMode) this.suppressMarksSync = true;
       try {
         success = rejectMark(view, markId);
@@ -9079,7 +9167,14 @@ class ProofEditorImpl implements ProofEditor {
       }
 
       if (serverMarks) {
-        applyRemoteMarks(view, serverMarks, { hydrateAnchors: this.collabCanEdit });
+        applyRemoteMarks(view, serverMarks, {
+          hydrateAnchors: this.collabCanEdit,
+          pruneMissingSuggestions: true,
+        });
+      }
+
+      if (this.isShareMode && (success || Boolean(serverMarks))) {
+        this.syncShareCollabStateFromView(view, serializer);
       }
 
       if (success) {
@@ -9128,7 +9223,10 @@ class ProofEditorImpl implements ProofEditor {
         if (this.editor) {
           this.editor.action((innerCtx) => {
             const innerView = innerCtx.get(editorViewCtx);
-            applyRemoteMarks(innerView, latestServerMarks!, { hydrateAnchors: this.collabCanEdit });
+            applyRemoteMarks(innerView, latestServerMarks!, {
+              hydrateAnchors: this.collabCanEdit,
+              pruneMissingSuggestions: true,
+            });
             const stats = getAuthorshipStats(innerView);
             this.notifyAuthorshipStatsUpdated(stats);
           });
@@ -9173,7 +9271,10 @@ class ProofEditorImpl implements ProofEditor {
           if (this.editor) {
             this.editor.action((innerCtx) => {
               const innerView = innerCtx.get(editorViewCtx);
-              applyRemoteMarks(innerView, latestServerMarks!, { hydrateAnchors: this.collabCanEdit });
+              applyRemoteMarks(innerView, latestServerMarks!, {
+                hydrateAnchors: this.collabCanEdit,
+                pruneMissingSuggestions: true,
+              });
             });
           }
         })().catch((error) => {

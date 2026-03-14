@@ -278,6 +278,7 @@ function acceptActiveSuggestionCommand(
 
   const proof = getProofEditorApi();
   if (proof?.markAcceptPersisted) {
+    acceptSuggestionMark(view, activeId);
     void proof.markAcceptPersisted(activeId);
     return true;
   }
