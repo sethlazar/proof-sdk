@@ -291,6 +291,11 @@ function persistTrackChangesViewMode(mode: SuggestionDisplayMode): void {
   }
 }
 
+function applyTrackChangesViewModeToDom(view: EditorView | null | undefined, mode: SuggestionDisplayMode): void {
+  if (!view?.dom) return;
+  view.dom.dataset.trackChangesView = normalizeTrackChangesViewMode(mode);
+}
+
 type MilkdownPlugin = (ctx: unknown) => unknown;
 
 async function loadPrismPlugin(): Promise<MilkdownPlugin | null> {
@@ -1340,6 +1345,7 @@ class ProofEditorImpl implements ProofEditor {
     const view = this.editor.ctx.get(editorViewCtx);
     (window as any).__editorView = view;
     this.trackChangesViewMode = setSuggestionDisplayMode(view, this.trackChangesViewMode);
+    applyTrackChangesViewModeToDom(view, this.trackChangesViewMode);
     this.updateEditableState(view);
     this.cleanupNavigation = initAgentNavigation(view);
 
@@ -6827,6 +6833,7 @@ class ProofEditorImpl implements ProofEditor {
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       mode = getSuggestionDisplayMode(view.state);
+      applyTrackChangesViewModeToDom(view, mode);
     });
     this.trackChangesViewMode = mode;
     return mode;
@@ -6845,6 +6852,7 @@ class ProofEditorImpl implements ProofEditor {
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       this.trackChangesViewMode = setSuggestionDisplayMode(view, nextMode);
+      applyTrackChangesViewModeToDom(view, this.trackChangesViewMode);
     });
     return this.trackChangesViewMode;
   }
@@ -6864,6 +6872,7 @@ class ProofEditorImpl implements ProofEditor {
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       nextMode = toggleSuggestionDisplayMode(view);
+      applyTrackChangesViewModeToDom(view, nextMode);
     });
     this.trackChangesViewMode = nextMode;
     persistTrackChangesViewMode(nextMode);

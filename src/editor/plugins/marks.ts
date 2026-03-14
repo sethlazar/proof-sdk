@@ -3156,7 +3156,7 @@ const STYLES = {
   insert_simple: 'color: #15803d; font-weight: 500;',
   delete: 'color: #b91c1c; text-decoration: line-through; text-decoration-color: #b91c1c;',
   hidden_source: 'display:none;color:transparent;text-decoration:none;background:transparent;border:none;padding:0;margin:0;pointer-events:none;',
-  change_indicator: 'display:inline-flex;width:10px;height:10px;margin:0 3px;vertical-align:middle;border-radius:999px;background:#fca5a5;box-shadow:0 0 0 1px rgba(185, 28, 28, 0.35);cursor:pointer;transform:translateY(-0.02em);',
+  change_indicator: 'display:inline-flex;width:7px;height:7px;margin:0 2px;vertical-align:middle;border-radius:999px;background:rgba(185, 28, 28, 0.45);box-shadow:none;cursor:pointer;transform:translateY(-0.06em);',
 };
 
 function normalizeComposeAnchorRange(range: MarkRange | null, doc: ProseMirrorNode): MarkRange | null {

@@ -44,7 +44,9 @@ export function installCollabCursorStyles(): void {
     .proof-collab-cursor__label {
       position: absolute;
       left: -1px;
-      top: -1.15em;
+      top: -6px;
+      transform: translateY(-100%);
+      z-index: 20;
       max-width: 200px;
       overflow: hidden;
       text-overflow: ellipsis;

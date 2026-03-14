@@ -15,8 +15,11 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string): s
 
 function run(): void {
   const editorSource = readFileSync(path.resolve(process.cwd(), 'src/editor/index.ts'), 'utf8');
+  const editorHtmlSource = readFileSync(path.resolve(process.cwd(), 'src/index.html'), 'utf8');
   const keybindingsSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/keybindings.ts'), 'utf8');
+  const marksSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/marks.ts'), 'utf8');
   const popoverSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/mark-popover.ts'), 'utf8');
+  const collabCursorSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/collab-cursors.ts'), 'utf8');
   const shareClientSource = readFileSync(path.resolve(process.cwd(), 'src/bridge/share-client.ts'), 'utf8');
   const agentRoutesSource = readFileSync(path.resolve(process.cwd(), 'server/agent-routes.ts'), 'utf8');
   const markRehydrationSource = readFileSync(path.resolve(process.cwd(), 'server/proof-mark-rehydration.ts'), 'utf8');
@@ -33,8 +36,31 @@ function run(): void {
   const setTrackChangesViewModeBlock = sliceBetween(editorSource, '  setTrackChangesViewMode(mode: SuggestionDisplayMode): SuggestionDisplayMode {', '\n  /**');
   assert(
     setTrackChangesViewModeBlock.includes('persistTrackChangesViewMode(nextMode);')
-      && setTrackChangesViewModeBlock.includes('this.trackChangesViewMode = setSuggestionDisplayMode(view, nextMode);'),
-    'Expected setTrackChangesViewMode to persist and dispatch the marks plugin display mode',
+      && setTrackChangesViewModeBlock.includes('this.trackChangesViewMode = setSuggestionDisplayMode(view, nextMode);')
+      && setTrackChangesViewModeBlock.includes('applyTrackChangesViewModeToDom(view, this.trackChangesViewMode);'),
+    'Expected setTrackChangesViewMode to persist, dispatch the marks plugin display mode, and tag the editor DOM with the active track-changes view',
+  );
+  assert(
+    editorSource.includes('function applyTrackChangesViewModeToDom(')
+      && editorSource.includes('view.dom.dataset.trackChangesView = normalizeTrackChangesViewMode(mode);')
+      && editorSource.includes('applyTrackChangesViewModeToDom(view, this.trackChangesViewMode);')
+      && editorSource.includes('applyTrackChangesViewModeToDom(view, mode);')
+      && editorSource.includes('applyTrackChangesViewModeToDom(view, nextMode);'),
+    'Expected track-changes mode changes to keep the editor DOM data attribute in sync for view-specific styling',
+  );
+  assert(
+    editorHtmlSource.includes('.ProseMirror[data-track-changes-view="simple"] span[data-proof="suggestion"] {')
+      && editorHtmlSource.includes('background: transparent !important;')
+      && editorHtmlSource.includes('text-decoration: none !important;')
+      && editorHtmlSource.includes('.ProseMirror[data-track-changes-view="simple"] .mark-replace-insert.mark-simple {')
+      && editorHtmlSource.includes('border-bottom: none !important;'),
+    'Expected simple markup to neutralize the legacy inline suggestion wrapper styling and remove replacement highlight blocks',
+  );
+  assert(
+    marksSource.includes("change_indicator: 'display:inline-flex;width:7px;height:7px;margin:0 2px;")
+      && collabCursorSource.includes('top: -6px;')
+      && collabCursorSource.includes('transform: translateY(-100%);'),
+    'Expected simple-markup deletion dots to be subtler and collaborator labels to sit above the text line',
   );
   assert(
     editorSource.includes("addModeItem('No markup'")
