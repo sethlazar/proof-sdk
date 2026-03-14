@@ -399,6 +399,48 @@ class MarkPopoverController {
     return nextId === currentMarkId ? null : nextId;
   }
 
+  private getSuggestionReviewFollowupMarkId(
+    preferredMarkId: string | null,
+    reviewedMarkId: string,
+  ): string | null {
+    const remainingSuggestions = getPendingSuggestions(getMarks(this.view.state))
+      .filter((mark) => isSuggestionKind(mark.kind) && mark.id !== reviewedMarkId)
+      .sort((a, b) => (a.range?.from ?? 0) - (b.range?.from ?? 0));
+    if (remainingSuggestions.length === 0) return null;
+
+    if (preferredMarkId && remainingSuggestions.some((mark) => mark.id === preferredMarkId)) {
+      return preferredMarkId;
+    }
+
+    return remainingSuggestions[0]?.id ?? null;
+  }
+
+  private openSuggestionAfterReview(
+    preferredMarkId: string | null,
+    reviewedMarkId: string,
+  ): void {
+    this.clearReviewActionRetryTimer();
+
+    const attempt = (remainingFrames: number): void => {
+      const followupMarkId = this.getSuggestionReviewFollowupMarkId(preferredMarkId, reviewedMarkId);
+      if (followupMarkId) {
+        this.openForMark(followupMarkId, undefined, { source: 'direct' });
+        return;
+      }
+      if (remainingFrames > 0) {
+        requestAnimationFrame(() => {
+          attempt(remainingFrames - 1);
+        });
+        return;
+      }
+      this.close();
+    };
+
+    requestAnimationFrame(() => {
+      attempt(2);
+    });
+  }
+
   private navigateToSuggestion(markId: string | null): void {
     if (!markId) return;
     this.clearReviewActionRetryTimer();
@@ -653,9 +695,7 @@ class MarkPopoverController {
         'box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12)',
       ].join(';');
 
-      if (item.markIds.length > 1) {
-        button.textContent = String(item.markIds.length);
-      }
+      button.textContent = String(item.markIds.length);
 
       const changeLabel = item.markIds.length === 1 ? 'change' : 'changes';
       button.title = `${item.markIds.length} pending ${changeLabel} on this line`;
@@ -812,11 +852,7 @@ class MarkPopoverController {
 
     const finish = (): void => {
       this.clearReviewActionRetryTimer();
-      if (nextMarkId) {
-        this.navigateToSuggestion(nextMarkId);
-      } else {
-        this.close();
-      }
+      this.openSuggestionAfterReview(nextMarkId, markId);
     };
 
     const proof = getProofEditorApi();

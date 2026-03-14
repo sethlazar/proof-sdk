@@ -99,6 +99,7 @@ function run(): void {
       && popoverSource.includes("getSuggestionDisplayMode(this.view.state) !== 'simple'")
       && popoverSource.includes("this.suggestionRail.className = 'mark-suggestion-rail';")
       && popoverSource.includes("button.className = 'mark-suggestion-rail-button';")
+      && popoverSource.includes('button.textContent = String(item.markIds.length);')
       && popoverSource.includes("const changeLabel = item.markIds.length === 1 ? 'change' : 'changes';")
       && popoverSource.includes('button.title = `${item.markIds.length} pending ${changeLabel} on this line`;')
       && popoverSource.includes("matchesReviewShortcut(event, { key: 'a', code: 'KeyA' })")
@@ -118,10 +119,13 @@ function run(): void {
       && popoverSource.includes('const optimisticApplied = runLocalActionOnly();')
       && popoverSource.includes('return acceptSuggestion(this.view, markId);')
       && popoverSource.includes('setReviewButtonsBusy(true);')
+      && popoverSource.includes('private getSuggestionReviewFollowupMarkId(')
+      && popoverSource.includes('private openSuggestionAfterReview(')
+      && popoverSource.includes('this.openSuggestionAfterReview(nextMarkId, markId);')
       && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct open where appropriate, a simple-markup suggestion rail, capture-phase review key handling, optimistic local review updates while share persistence settles, retry transient review actions, and active suggestion navigation',
+    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct open where appropriate, a simple-markup suggestion rail that still shows single-change counts, capture-phase review key handling, optimistic local review updates while share persistence settles, retry transient review actions, and active suggestion navigation that advances after review',
   );
   assert(
     editorSource.includes("return normalized.length > 0 && normalized !== 'Saved';")
