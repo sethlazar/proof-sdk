@@ -978,7 +978,7 @@ class MarkPopoverController {
     markId: string,
     action: 'accept' | 'reject',
     nextMarkId: string | null,
-    suggestionKind: 'insert' | 'delete' | 'replace',
+    _suggestionKind: 'insert' | 'delete' | 'replace',
     options?: { followupMode?: 'advance' | 'close' },
   ): void {
     this.clearReviewActionRetryTimer();
@@ -1037,7 +1037,9 @@ class MarkPopoverController {
         ? () => proof.markRejectPersisted(markId)
         : null);
     if (persistedAction) {
-      const allowOptimisticAccept = action === 'accept' && suggestionKind !== 'insert';
+      // Persist first in share mode. Optimistic local accepts can race the server and
+      // turn valid accepts into "Mark not found" responses, especially for deletions.
+      const allowOptimisticAccept = false;
       const optimisticApplied = allowOptimisticAccept ? runLocalActionOnly() : false;
       if (optimisticApplied) {
         finish();

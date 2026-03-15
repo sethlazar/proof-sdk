@@ -185,8 +185,8 @@ function run(): void {
       && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId, mark.kind);")
       && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId, mark.kind);")
       && popoverSource.includes('const persistedAction = action === \'accept\'')
-      && popoverSource.includes("suggestionKind: 'insert' | 'delete' | 'replace'")
-      && popoverSource.includes("const allowOptimisticAccept = action === 'accept' && suggestionKind !== 'insert';")
+      && popoverSource.includes("_suggestionKind: 'insert' | 'delete' | 'replace'")
+      && popoverSource.includes('const allowOptimisticAccept = false;')
       && popoverSource.includes('const optimisticApplied = allowOptimisticAccept ? runLocalActionOnly() : false;')
       && popoverSource.includes('return acceptSuggestion(this.view, markId);')
       && popoverSource.includes('setReviewButtonsBusy(true);')
@@ -206,7 +206,7 @@ function run(): void {
       && popoverSource.includes('preventMousePointerDown: true,')
       && popoverSource.includes('preventMouseDown: true,')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct review entry points, a simple-markup suggestion rail that merges adjacent changed lines into a continuous narrow rail with rounded endcaps and only labels multi-change lines, capture-phase review key handling, optimistic local review updates while share persistence settles, retry transient review actions, active suggestion navigation that advances after review, and first-click side-panel review buttons that suppress the desktop focus steal',
+    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct review entry points, a simple-markup suggestion rail that merges adjacent changed lines into a continuous narrow rail with rounded endcaps and only labels multi-change lines, capture-phase review key handling, persisted review actions that avoid share-mode accept races, retry transient review actions, active suggestion navigation that advances after review, and first-click side-panel review buttons that suppress the desktop focus steal',
   );
   assert(
     contextMenuSource.includes('resolveSuggestionContext(')
