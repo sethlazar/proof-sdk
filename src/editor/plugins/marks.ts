@@ -271,6 +271,22 @@ function resolveRangeFromQuote(doc: ProseMirrorNode, quote: string): MarkRange |
   return resolveQuoteRange(doc, quote);
 }
 
+function resolveRangeFromNearbyQuote(
+  doc: ProseMirrorNode,
+  quote: string,
+  candidateRange: MarkRange,
+): MarkRange | null {
+  const normalizedQuote = normalizeQuote(quote);
+  if (!normalizedQuote) return null;
+
+  const padding = 8;
+  const scope: MarkRange = {
+    from: Math.max(0, candidateRange.from - padding),
+    to: Math.min(doc.content.size, candidateRange.to + padding),
+  };
+  return resolveQuoteRange(doc, normalizedQuote, scope);
+}
+
 function parseRelativeCharOffset(value: unknown): number | null {
   if (typeof value !== 'string') return null;
   const match = value.match(/^char:(\d+)$/);
@@ -310,6 +326,10 @@ function resolveStoredMarkRange(doc: ProseMirrorNode, stored: StoredMark): MarkR
       if (actualRelativeQuote === normalizedStoredQuote) {
         return relativeRange;
       }
+      const nearbyRelativeRange = resolveRangeFromNearbyQuote(doc, normalizedStoredQuote, relativeRange);
+      if (nearbyRelativeRange) {
+        return nearbyRelativeRange;
+      }
     }
   }
 
@@ -333,6 +353,10 @@ function resolveStoredMarkRange(doc: ProseMirrorNode, stored: StoredMark): MarkR
       const actualQuote = normalizeQuote(getTextForRange(doc, candidateRange));
       if (actualQuote === normalizedStoredQuote) {
         return candidateRange;
+      }
+      const nearbyStoredRange = resolveRangeFromNearbyQuote(doc, normalizedStoredQuote, candidateRange);
+      if (nearbyStoredRange) {
+        return nearbyStoredRange;
       }
     }
   }

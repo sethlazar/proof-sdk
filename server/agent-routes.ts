@@ -2167,7 +2167,15 @@ agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {
         },
       };
     }
+    const canTreatCommittedAcceptAsVerified = !collabStatus.confirmed
+      && collabStatus.reason === 'markdown_mismatch'
+      && collabStatus.fragmentConfirmed === true
+      && collabStatus.canonicalConfirmed !== false;
     if (!collabStatus.confirmed) {
+      if (canTreatCommittedAcceptAsVerified) {
+        sendMutationResponse(res, result.status, result.body, { route: mutationRoute, slug });
+        return;
+      }
       sendMutationResponse(
         res,
         409,

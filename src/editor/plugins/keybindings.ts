@@ -23,6 +23,7 @@ import {
   getUnresolvedComments,
 } from '../../formats/marks';
 import { getCurrentActor } from '../actor';
+import { proofKeybindingConfig } from '../keybindings-config';
 import { getTextForRange } from '../utils/text-range';
 
 // ============================================================================
@@ -52,6 +53,41 @@ let showAgentInputCallback: ((context: AgentInputContext, callbacks: AgentInputC
 function getProofEditorApi(): Window['proof'] | null {
   if (typeof window === 'undefined') return null;
   return window.proof ?? null;
+}
+
+function getPendingSuggestionIds(state: EditorState): string[] {
+  return getMarks(state)
+    .filter((mark) => mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+    .sort((a, b) => (a.range?.from ?? 0) - (b.range?.from ?? 0))
+    .map((mark) => mark.id);
+}
+
+function getSuggestionReviewFollowupId(state: EditorState, activeId: string): string | null {
+  const suggestionIds = getPendingSuggestionIds(state);
+  if (suggestionIds.length <= 1) return null;
+  const currentIndex = suggestionIds.indexOf(activeId);
+  if (currentIndex === -1) return suggestionIds[0] ?? null;
+  return suggestionIds[(currentIndex + 1) % suggestionIds.length] ?? null;
+}
+
+function persistSuggestionReviewAndAdvance(
+  markId: string,
+  nextSuggestionId: string | null,
+  action: 'accept' | 'reject',
+): boolean {
+  const proof = getProofEditorApi();
+  const persistedAction = action === 'accept'
+    ? proof?.markAcceptPersisted
+    : proof?.markRejectPersisted;
+  if (typeof persistedAction !== 'function') return false;
+
+  void persistedAction.call(proof, markId).then((success) => {
+    if (!success || !nextSuggestionId) return;
+    if (typeof proof?.navigateToMark === 'function') {
+      proof.navigateToMark(nextSuggestionId);
+    }
+  });
+  return true;
 }
 
 /**
@@ -241,6 +277,26 @@ function resolveActiveComment(
   return true;
 }
 
+function undoCommand(
+  _state: EditorState,
+  _dispatch: ((tr: unknown) => void) | undefined,
+  _view: EditorView | undefined
+): boolean {
+  const proof = getProofEditorApi();
+  if (!proof?.undo) return false;
+  return proof.undo();
+}
+
+function redoCommand(
+  _state: EditorState,
+  _dispatch: ((tr: unknown) => void) | undefined,
+  _view: EditorView | undefined
+): boolean {
+  const proof = getProofEditorApi();
+  if (!proof?.redo) return false;
+  return proof.redo();
+}
+
 function navigateNextSuggestionCommand(
   _state: EditorState,
   _dispatch: ((tr: unknown) => void) | undefined,
@@ -275,17 +331,27 @@ function acceptActiveSuggestionCommand(
   if (!activeMark || (activeMark.kind !== 'insert' && activeMark.kind !== 'delete' && activeMark.kind !== 'replace')) {
     return false;
   }
+  const nextSuggestionId = getSuggestionReviewFollowupId(state, activeId);
 
   const proof = getProofEditorApi();
   if (proof?.markAcceptPersisted) {
-    acceptSuggestionMark(view, activeId);
-    void proof.markAcceptPersisted(activeId);
+    const handled = acceptSuggestionMark(view, activeId);
+    if (!handled) return false;
+    persistSuggestionReviewAndAdvance(activeId, nextSuggestionId, 'accept');
     return true;
   }
   if (proof?.markAccept) {
-    return proof.markAccept(activeId);
+    const handled = proof.markAccept(activeId);
+    if (handled && nextSuggestionId && typeof proof.navigateToMark === 'function') {
+      proof.navigateToMark(nextSuggestionId);
+    }
+    return handled;
   }
-  return acceptSuggestionMark(view, activeId);
+  const handled = acceptSuggestionMark(view, activeId);
+  if (handled && nextSuggestionId && typeof proof?.navigateToMark === 'function') {
+    proof.navigateToMark(nextSuggestionId);
+  }
+  return handled;
 }
 
 function rejectActiveSuggestionCommand(
@@ -300,16 +366,27 @@ function rejectActiveSuggestionCommand(
   if (!activeMark || (activeMark.kind !== 'insert' && activeMark.kind !== 'delete' && activeMark.kind !== 'replace')) {
     return false;
   }
+  const nextSuggestionId = getSuggestionReviewFollowupId(state, activeId);
 
   const proof = getProofEditorApi();
   if (proof?.markRejectPersisted) {
-    void proof.markRejectPersisted(activeId);
+    const handled = rejectSuggestionMark(view, activeId);
+    if (!handled) return false;
+    persistSuggestionReviewAndAdvance(activeId, nextSuggestionId, 'reject');
     return true;
   }
   if (proof?.markReject) {
-    return proof.markReject(activeId);
+    const handled = proof.markReject(activeId);
+    if (handled && nextSuggestionId && typeof proof.navigateToMark === 'function') {
+      proof.navigateToMark(nextSuggestionId);
+    }
+    return handled;
   }
-  return rejectSuggestionMark(view, activeId);
+  const handled = rejectSuggestionMark(view, activeId);
+  if (handled && nextSuggestionId && typeof proof?.navigateToMark === 'function') {
+    proof.navigateToMark(nextSuggestionId);
+  }
+  return handled;
 }
 
 function toggleSuggestionsCommand(
@@ -367,16 +444,18 @@ export function executeQuickAction(view: EditorView, action: QuickAction): void 
 // ============================================================================
 
 const agentKeymap = keymap({
-  'Mod-Shift-p': invokeAgentCommand,
-  'Mod-Shift-k': addProofCommentCommand,
-  'Mod-]': navigateNextComment,
-  'Mod-[': navigatePrevComment,
-  'Mod-Alt-]': navigateNextSuggestionCommand,
-  'Mod-Alt-[': navigatePrevSuggestionCommand,
-  'Mod-Alt-a': acceptActiveSuggestionCommand,
-  'Mod-Alt-r': rejectActiveSuggestionCommand,
-  'Mod-Shift-e': toggleSuggestionsCommand,
-  'Mod-Shift-r': resolveActiveComment,
+  [proofKeybindingConfig.invokeAgent]: invokeAgentCommand,
+  [proofKeybindingConfig.addProofComment]: addProofCommentCommand,
+  [proofKeybindingConfig.undo]: undoCommand,
+  [proofKeybindingConfig.redo]: redoCommand,
+  [proofKeybindingConfig.nextComment]: navigateNextComment,
+  [proofKeybindingConfig.prevComment]: navigatePrevComment,
+  [proofKeybindingConfig.nextSuggestion]: navigateNextSuggestionCommand,
+  [proofKeybindingConfig.prevSuggestion]: navigatePrevSuggestionCommand,
+  [proofKeybindingConfig.acceptSuggestionAndNext]: acceptActiveSuggestionCommand,
+  [proofKeybindingConfig.rejectSuggestionAndNext]: rejectActiveSuggestionCommand,
+  [proofKeybindingConfig.toggleTrackChanges]: toggleSuggestionsCommand,
+  [proofKeybindingConfig.resolveComment]: resolveActiveComment,
 });
 
 // ============================================================================

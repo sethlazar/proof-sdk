@@ -1,7 +1,8 @@
 /**
  * Context Menu for Proof
  *
- * Provides right-click menu with agent options:
+ * Provides right-click menu with agent options and suggestion review actions:
+ * - Accept / Reject / Review change when right-clicking a tracked change
  * - Ask Proof... (opens input dialog)
  * - Quick Actions submenu
  * - Add Comment for Proof
@@ -9,8 +10,14 @@
 
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { showAgentInputDialog } from './agent-input-dialog';
-import { comment as addComment } from '../editor/plugins/marks';
+import {
+  accept as acceptSuggestionMark,
+  comment as addComment,
+  getMarks,
+  reject as rejectSuggestionMark,
+} from '../editor/plugins/marks';
 import { getCurrentActor } from '../editor/actor';
+import { proofKeybindingConfig } from '../editor/keybindings-config';
 import type { AgentInputContext } from '../editor/plugins/keybindings';
 import { getTextForRange } from '../editor/utils/text-range';
 
@@ -21,15 +28,24 @@ import { getTextForRange } from '../editor/utils/text-range';
 interface ContextMenuState {
   isOpen: boolean;
   element: HTMLElement | null;
+  shortcutsElement: HTMLElement | null;
   editorView: EditorView | null;
   selectionContext: {
     text: string;
     from: number;
     to: number;
   } | null;
+  suggestionContext: {
+    markId: string;
+    kind: 'insert' | 'delete' | 'replace';
+  } | null;
 }
 
 type QuickAction = 'fix-grammar' | 'improve-clarity' | 'make-shorter';
+type ShortcutHelpEntry = {
+  label: string;
+  binding: string;
+};
 
 // ============================================================================
 // State
@@ -38,19 +54,80 @@ type QuickAction = 'fix-grammar' | 'improve-clarity' | 'make-shorter';
 const state: ContextMenuState = {
   isOpen: false,
   element: null,
+  shortcutsElement: null,
   editorView: null,
   selectionContext: null,
+  suggestionContext: null,
 };
+
+function getProofEditorApi(): Window['proof'] | null {
+  if (typeof window === 'undefined') return null;
+  return window.proof ?? null;
+}
+
+function resolveSuggestionContext(
+  view: EditorView,
+  target: EventTarget | null,
+): ContextMenuState['suggestionContext'] {
+  const targetElement = target instanceof Element
+    ? target
+    : target instanceof Node
+      ? target.parentElement
+      : null;
+  if (!(targetElement instanceof HTMLElement)) return null;
+  const markEl = targetElement.closest('[data-mark-id]') as HTMLElement | null;
+  const markId = markEl?.dataset.markId ?? '';
+  if (!markId) return null;
+  const mark = getMarks(view.state).find((item) => item.id === markId);
+  if (!mark || (mark.kind !== 'insert' && mark.kind !== 'delete' && mark.kind !== 'replace')) {
+    return null;
+  }
+  return {
+    markId,
+    kind: mark.kind,
+  };
+}
 
 // ============================================================================
 // Menu Element
 // ============================================================================
 
-function createMenuElement(): HTMLElement {
+function createSuggestionActionsMarkup(
+  suggestionContext: ContextMenuState['suggestionContext'],
+): string {
+  if (!suggestionContext) return '';
+
+  const label = suggestionContext.kind === 'replace'
+    ? 'replacement'
+    : suggestionContext.kind === 'insert'
+      ? 'insertion'
+      : 'deletion';
+
+  return `
+      <button class="proof-context-menu-item" data-action="review-suggestion">
+        <span class="proof-context-menu-icon">↗</span>
+        <span>Review ${label}</span>
+      </button>
+      <button class="proof-context-menu-item" data-action="accept-suggestion">
+        <span class="proof-context-menu-icon">✓</span>
+        <span>Accept change</span>
+      </button>
+      <button class="proof-context-menu-item" data-action="reject-suggestion">
+        <span class="proof-context-menu-icon">✕</span>
+        <span>Reject change</span>
+      </button>
+      <div class="proof-context-menu-separator"></div>
+  `;
+}
+
+function createMenuElement(
+  suggestionContext: ContextMenuState['suggestionContext'],
+): HTMLElement {
   const menu = document.createElement('div');
   menu.className = 'proof-context-menu';
   menu.innerHTML = `
     <div class="proof-context-menu-items">
+      ${createSuggestionActionsMarkup(suggestionContext)}
       <button class="proof-context-menu-item" data-action="ask-proof">
         <span class="proof-context-menu-icon">💬</span>
         <span>Ask Proof...</span>
@@ -72,6 +149,10 @@ function createMenuElement(): HTMLElement {
           </button>
         </div>
       </div>
+      <button class="proof-context-menu-item" data-action="show-shortcuts">
+        <span class="proof-context-menu-icon">⌘</span>
+        <span>Keyboard shortcuts</span>
+      </button>
       <div class="proof-context-menu-separator"></div>
       <button class="proof-context-menu-item" data-action="add-comment">
         <span class="proof-context-menu-icon">📝</span>
@@ -186,6 +267,81 @@ function createMenuElement(): HTMLElement {
         transform: translateX(0);
       }
 
+      .proof-context-shortcuts-popover {
+        position: fixed;
+        z-index: 10002;
+        background: var(--proof-bg, #ffffff);
+        border: 1px solid var(--proof-border, #e5e7eb);
+        border-radius: 10px;
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16);
+        min-width: 280px;
+        max-width: min(360px, calc(100vw - 24px));
+        padding: 10px 0;
+        opacity: 0;
+        transform: scale(0.97);
+        transform-origin: top left;
+        transition: opacity 0.12s ease, transform 0.12s ease;
+      }
+
+      .proof-context-shortcuts-popover.visible {
+        opacity: 1;
+        transform: scale(1);
+      }
+
+      .proof-context-shortcuts-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 0 14px 8px;
+        font-weight: 600;
+        color: var(--proof-text, #1f2937);
+      }
+
+      .proof-context-shortcuts-title {
+        font-size: 13px;
+      }
+
+      .proof-context-shortcuts-close {
+        border: none;
+        background: none;
+        color: var(--proof-text-muted, #9ca3af);
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 1;
+        padding: 0;
+      }
+
+      .proof-context-shortcuts-close:hover {
+        color: var(--proof-text, #1f2937);
+      }
+
+      .proof-context-shortcuts-list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .proof-context-shortcuts-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 6px 14px;
+        color: var(--proof-text, #1f2937);
+      }
+
+      .proof-context-shortcuts-label {
+        font-size: 12px;
+      }
+
+      .proof-context-shortcuts-binding {
+        color: var(--proof-text-muted, #6b7280);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
       /* Dark mode support */
       @media (prefers-color-scheme: dark) {
         .proof-context-menu {
@@ -243,14 +399,130 @@ function positionMenu(menu: HTMLElement, x: number, y: number): void {
   menu.style.top = `${top}px`;
 }
 
+function positionAdjacentPopover(popover: HTMLElement, anchor: DOMRect): void {
+  const margin = 8;
+  const viewportW = window.innerWidth;
+  const viewportH = window.innerHeight;
+
+  popover.style.visibility = 'hidden';
+  popover.style.left = '0px';
+  popover.style.top = '0px';
+  document.body.appendChild(popover);
+
+  const rect = popover.getBoundingClientRect();
+  let left = anchor.right + 8;
+  if (left + rect.width > viewportW - margin) {
+    left = anchor.left - rect.width - 8;
+  }
+  if (left < margin) {
+    left = Math.max(margin, Math.min(viewportW - rect.width - margin, anchor.left));
+  }
+
+  let top = anchor.top;
+  if (top + rect.height > viewportH - margin) {
+    top = viewportH - rect.height - margin;
+  }
+  if (top < margin) {
+    top = margin;
+  }
+
+  popover.style.visibility = '';
+  popover.style.left = `${left}px`;
+  popover.style.top = `${top}px`;
+}
+
+function isMacPlatform(): boolean {
+  if (typeof navigator === 'undefined') return true;
+  return /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
+
+function formatShortcutBinding(binding: string): string {
+  const isMac = isMacPlatform();
+  const formattedTokens = binding.split('-').map((token) => {
+    if (token === 'Mod') return isMac ? 'Cmd' : 'Ctrl';
+    if (token === 'Alt') return isMac ? 'Option' : 'Alt';
+    if (token === 'Shift') return 'Shift';
+    if (token.length === 1) return token.toUpperCase();
+    return token;
+  });
+  return formattedTokens.join('+');
+}
+
+function getShortcutHelpEntries(): ShortcutHelpEntry[] {
+  return [
+    { label: 'Ask Proof', binding: proofKeybindingConfig.invokeAgent },
+    { label: 'Add comment for Proof', binding: proofKeybindingConfig.addProofComment },
+    { label: 'Undo', binding: proofKeybindingConfig.undo },
+    { label: 'Redo', binding: proofKeybindingConfig.redo },
+    { label: 'Next comment', binding: proofKeybindingConfig.nextComment },
+    { label: 'Previous comment', binding: proofKeybindingConfig.prevComment },
+    { label: 'Next change', binding: proofKeybindingConfig.nextSuggestion },
+    { label: 'Previous change', binding: proofKeybindingConfig.prevSuggestion },
+    { label: 'Accept change', binding: proofKeybindingConfig.acceptSuggestionAndNext },
+    { label: 'Reject change', binding: proofKeybindingConfig.rejectSuggestionAndNext },
+    { label: 'Toggle Track Changes', binding: proofKeybindingConfig.toggleTrackChanges },
+    { label: 'Resolve comment', binding: proofKeybindingConfig.resolveComment },
+  ];
+}
+
+function closeShortcutsPopover(): void {
+  if (!state.shortcutsElement) return;
+  const popover = state.shortcutsElement;
+  popover.classList.remove('visible');
+  window.setTimeout(() => {
+    if (state.shortcutsElement === popover) {
+      state.shortcutsElement = null;
+    }
+    if (popover.parentNode) {
+      popover.parentNode.removeChild(popover);
+    }
+  }, 100);
+}
+
+function showShortcutsPopover(): void {
+  if (!state.element) return;
+  closeShortcutsPopover();
+
+  const popover = document.createElement('div');
+  popover.className = 'proof-context-shortcuts-popover';
+  const entries = getShortcutHelpEntries();
+  popover.innerHTML = `
+    <div class="proof-context-shortcuts-header">
+      <span class="proof-context-shortcuts-title">Keyboard shortcuts</span>
+      <button class="proof-context-shortcuts-close" type="button" aria-label="Close keyboard shortcuts">×</button>
+    </div>
+    <div class="proof-context-shortcuts-list">
+      ${entries.map((entry) => `
+        <div class="proof-context-shortcuts-row">
+          <span class="proof-context-shortcuts-label">${entry.label}</span>
+          <span class="proof-context-shortcuts-binding">${formatShortcutBinding(entry.binding)}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  state.shortcutsElement = popover;
+  positionAdjacentPopover(popover, state.element.getBoundingClientRect());
+  const closeButton = popover.querySelector('.proof-context-shortcuts-close') as HTMLButtonElement | null;
+  closeButton?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    closeShortcutsPopover();
+  });
+  requestAnimationFrame(() => {
+    popover.classList.add('visible');
+  });
+}
+
 // ============================================================================
 // Event Handlers
 // ============================================================================
 
 function handleKeyDown(e: KeyboardEvent): void {
-  if (!state.isOpen) return;
+  if (!state.isOpen && !state.shortcutsElement) return;
 
   if (e.key === 'Escape') {
+    closeShortcutsPopover();
     closeMenu();
     e.preventDefault();
     e.stopPropagation();
@@ -260,19 +532,83 @@ function handleKeyDown(e: KeyboardEvent): void {
 function handleClickOutside(e: MouseEvent): void {
   if (!state.isOpen || !state.element) return;
 
+  if (state.shortcutsElement?.contains(e.target as Node)) {
+    return;
+  }
   if (!state.element.contains(e.target as Node)) {
+    closeShortcutsPopover();
     closeMenu();
   }
 }
 
-function handleAction(action: string): void {
-  if (!state.editorView || !state.selectionContext) return;
+async function runSuggestionAction(action: 'accept' | 'reject', markId: string, view: EditorView): Promise<void> {
+  const proof = getProofEditorApi();
+  if (action === 'accept') {
+    if (typeof proof?.markAcceptPersisted === 'function') {
+      await proof.markAcceptPersisted(markId);
+      return;
+    }
+    if (typeof proof?.markAccept === 'function') {
+      proof.markAccept(markId);
+      return;
+    }
+    acceptSuggestionMark(view, markId);
+    return;
+  }
 
+  if (typeof proof?.markRejectPersisted === 'function') {
+    await proof.markRejectPersisted(markId);
+    return;
+  }
+  if (typeof proof?.markReject === 'function') {
+    proof.markReject(markId);
+    return;
+  }
+  rejectSuggestionMark(view, markId);
+}
+
+function reviewSuggestion(markId: string): void {
+  const proof = getProofEditorApi();
+  if (typeof proof?.navigateToMark === 'function') {
+    proof.navigateToMark(markId);
+  }
+}
+
+async function handleAction(action: string): Promise<void> {
+  if (!state.editorView) return;
   const view = state.editorView;
-  const { text, from, to } = state.selectionContext;
+  const selectionContext = state.selectionContext;
+  const suggestionContext = state.suggestionContext;
+
+  if (action === 'accept-suggestion' || action === 'reject-suggestion' || action === 'review-suggestion') {
+    if (!suggestionContext) {
+      closeMenu();
+      return;
+    }
+    const { markId } = suggestionContext;
+    closeMenu();
+    if (action === 'review-suggestion') {
+      reviewSuggestion(markId);
+      return;
+    }
+    await runSuggestionAction(action === 'accept-suggestion' ? 'accept' : 'reject', markId, view);
+    return;
+  }
+
+  if (!selectionContext) {
+    closeMenu();
+    return;
+  }
+
+  const { text, from, to } = selectionContext;
   const coords = view.coordsAtPos(from);
 
   switch (action) {
+    case 'show-shortcuts': {
+      showShortcutsPopover();
+      return;
+    }
+
     case 'ask-proof': {
       const context: AgentInputContext = {
         selection: text,
@@ -339,7 +675,8 @@ function handleQuickAction(action: QuickAction): void {
 export function showContextMenu(
   view: EditorView,
   x: number,
-  y: number
+  y: number,
+  target?: EventTarget | null,
 ): void {
   // Close any existing menu
   if (state.isOpen) {
@@ -356,9 +693,10 @@ export function showContextMenu(
     from,
     to,
   };
+  state.suggestionContext = resolveSuggestionContext(view, target ?? null);
 
   // Create and position menu
-  const menu = createMenuElement();
+  const menu = createMenuElement(state.suggestionContext);
   state.element = menu;
   state.isOpen = true;
 
@@ -380,10 +718,30 @@ export function showContextMenu(
   // Wire up event handlers
   const askProofBtn = menu.querySelector('[data-action="ask-proof"]') as HTMLButtonElement;
   const addCommentBtn = menu.querySelector('[data-action="add-comment"]') as HTMLButtonElement;
+  const showShortcutsBtn = menu.querySelector('[data-action="show-shortcuts"]') as HTMLButtonElement;
+  const acceptSuggestionBtn = menu.querySelector('[data-action="accept-suggestion"]') as HTMLButtonElement | null;
+  const rejectSuggestionBtn = menu.querySelector('[data-action="reject-suggestion"]') as HTMLButtonElement | null;
+  const reviewSuggestionBtn = menu.querySelector('[data-action="review-suggestion"]') as HTMLButtonElement | null;
   const quickActionBtns = menu.querySelectorAll('[data-quick-action]');
 
-  askProofBtn?.addEventListener('click', () => handleAction('ask-proof'));
-  addCommentBtn?.addEventListener('click', () => handleAction('add-comment'));
+  askProofBtn?.addEventListener('click', () => {
+    void handleAction('ask-proof');
+  });
+  showShortcutsBtn?.addEventListener('click', () => {
+    void handleAction('show-shortcuts');
+  });
+  addCommentBtn?.addEventListener('click', () => {
+    void handleAction('add-comment');
+  });
+  acceptSuggestionBtn?.addEventListener('click', () => {
+    void handleAction('accept-suggestion');
+  });
+  rejectSuggestionBtn?.addEventListener('click', () => {
+    void handleAction('reject-suggestion');
+  });
+  reviewSuggestionBtn?.addEventListener('click', () => {
+    void handleAction('review-suggestion');
+  });
 
   quickActionBtns.forEach((btn) => {
     btn.addEventListener('click', (e) => {
@@ -402,6 +760,7 @@ export function showContextMenu(
  * Close the context menu
  */
 export function closeMenu(): void {
+  closeShortcutsPopover();
   if (!state.element) return;
 
   state.element.classList.remove('visible');
@@ -411,9 +770,11 @@ export function closeMenu(): void {
       state.element.parentNode.removeChild(state.element);
     }
     state.element = null;
+    state.shortcutsElement = null;
     state.isOpen = false;
     state.editorView = null;
     state.selectionContext = null;
+    state.suggestionContext = null;
   }, 100);
 
   document.removeEventListener('keydown', handleKeyDown, true);
@@ -436,7 +797,7 @@ export function initContextMenu(view: EditorView): () => void {
     // Only show our menu if clicking in the editor
     if (view.dom.contains(e.target as Node)) {
       e.preventDefault();
-      showContextMenu(view, e.clientX, e.clientY);
+      showContextMenu(view, e.clientX, e.clientY, e.target);
     }
   };
 

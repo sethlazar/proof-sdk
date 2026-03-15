@@ -249,6 +249,39 @@ function findEditableSuggestionCandidate(
   to: number,
   actor: string
 ): EditableSuggestionCandidate | null {
+  const matches = collectEditableSuggestionCandidates(doc, metadata, suggestionType, from, to, actor);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function findReusableInsertSuggestionCandidate(
+  doc: ProseMirrorNode,
+  metadata: Record<string, StoredMark>,
+  suggestionType: MarkType,
+  from: number,
+  to: number,
+  actor: string,
+): EditableSuggestionCandidate | null {
+  const matches = collectEditableSuggestionCandidates(doc, metadata, suggestionType, from, to, actor)
+    .filter((candidate) => candidate.kind === 'insert');
+  if (matches.length === 0) return null;
+
+  return [...matches].sort((a, b) => {
+    const aContainsRange = a.range.from <= from && a.range.to >= to ? 0 : 1;
+    const bContainsRange = b.range.from <= from && b.range.to >= to ? 0 : 1;
+    if (aContainsRange !== bContainsRange) return aContainsRange - bContainsRange;
+    if (a.range.from !== b.range.from) return a.range.from - b.range.from;
+    return (b.range.to - b.range.from) - (a.range.to - a.range.from);
+  })[0];
+}
+
+function collectEditableSuggestionCandidates(
+  doc: ProseMirrorNode,
+  metadata: Record<string, StoredMark>,
+  suggestionType: MarkType,
+  from: number,
+  to: number,
+  actor: string,
+): EditableSuggestionCandidate[] {
   const candidates = new Map<string, EditableSuggestionCandidate>();
 
   doc.descendants((node, pos) => {
@@ -295,7 +328,7 @@ function findEditableSuggestionCandidate(
     return from >= candidate.range.from && to <= candidate.range.to;
   });
 
-  return matches.length === 1 ? matches[0] : null;
+  return matches;
 }
 
 function syncEditableSuggestionMetadata(
@@ -553,9 +586,15 @@ export function wrapTransactionForSuggestions(
           };
           metadataChanged = true;
         } else if (existing.hasInsert) {
-          const suggestionId = generateMarkId();
-          const createdAt = new Date().toISOString();
-
+          const reusableInsert = findReusableInsertSuggestionCandidate(
+            newTr.doc,
+            metadata,
+            suggestionType,
+            from,
+            to,
+            actor,
+          );
+          const suggestionId = reusableInsert?.id ?? generateMarkId();
           newTr.replaceWith(from, to, state.schema.text(insertedText));
           newTr.addMark(
             from,
@@ -563,10 +602,25 @@ export function wrapTransactionForSuggestions(
             suggestionType.create({ id: suggestionId, kind: 'insert', by: actor })
           );
 
-          metadata = {
-            ...metadata,
-            [suggestionId]: buildSuggestionMetadata('insert', actor, insertedText, createdAt),
-          };
+          if (reusableInsert) {
+            const synced = syncEditableSuggestionMetadata(metadata, newTr.doc, suggestionType, reusableInsert);
+            metadata = synced.metadata;
+            if (synced.range) {
+              lastInsertByActor.set(actor, {
+                id: reusableInsert.id,
+                from: synced.range.from,
+                to: synced.range.to,
+                by: actor,
+                updatedAt: Date.now(),
+              });
+            }
+          } else {
+            const createdAt = new Date().toISOString();
+            metadata = {
+              ...metadata,
+              [suggestionId]: buildSuggestionMetadata('insert', actor, insertedText, createdAt),
+            };
+          }
           metadataChanged = true;
         } else {
           const suggestionId = generateMarkId();
@@ -943,8 +997,15 @@ export function wrapTransactionForSuggestions(
           metadataChanged = true;
         } else if (existing.hasInsert) {
           // Replace inside a pending insertion - keep it as an insertion suggestion.
-          const suggestionId = generateMarkId();
-          const createdAt = new Date().toISOString();
+          const reusableInsert = findReusableInsertSuggestionCandidate(
+            newTr.doc,
+            metadata,
+            suggestionType,
+            safeFrom,
+            safeTo,
+            actor,
+          );
+          const suggestionId = reusableInsert?.id ?? generateMarkId();
 
           newTr.replaceWith(safeFrom, safeTo, state.schema.text(insertedText));
           newTr.addMark(
@@ -954,10 +1015,25 @@ export function wrapTransactionForSuggestions(
           );
           writeOffset += insertedText.length - deletedText.length;
 
-          metadata = {
-            ...metadata,
-            [suggestionId]: buildSuggestionMetadata('insert', actor, insertedText, createdAt),
-          };
+          if (reusableInsert) {
+            const synced = syncEditableSuggestionMetadata(metadata, newTr.doc, suggestionType, reusableInsert);
+            metadata = synced.metadata;
+            if (synced.range) {
+              lastInsertByActor.set(actor, {
+                id: reusableInsert.id,
+                from: synced.range.from,
+                to: synced.range.to,
+                by: actor,
+                updatedAt: Date.now(),
+              });
+            }
+          } else {
+            const createdAt = new Date().toISOString();
+            metadata = {
+              ...metadata,
+              [suggestionId]: buildSuggestionMetadata('insert', actor, insertedText, createdAt),
+            };
+          }
           metadataChanged = true;
         } else {
           // Replace: show the live replacement text and keep the original text in metadata.

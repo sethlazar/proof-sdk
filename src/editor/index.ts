@@ -89,7 +89,7 @@ import { mermaidDiagramsPlugin } from './plugins/mermaid-diagrams';
 import { taskCheckboxesPlugin } from './plugins/task-checkboxes';
 import type { Node as ProseMirrorNode } from '@milkdown/kit/prose/model';
 import type { EditorView } from '@milkdown/kit/prose/view';
-import { TextSelection } from '@milkdown/kit/prose/state';
+import { TextSelection, type EditorState } from '@milkdown/kit/prose/state';
 import {
   marksPlugins,
   marksPluginKey,
@@ -245,6 +245,40 @@ type ProofConfigWindow = Window & {
     trackChangesViewDefaultMode?: string;
   };
 };
+
+type UndoSliceNode = {
+  type?: string;
+  text?: string;
+  content?: UndoSliceNode[];
+};
+
+type UndoSnapshotIntent = {
+  coalesce: boolean;
+  continueGroupAfter: boolean;
+};
+
+function collectUndoSliceText(nodes?: UndoSliceNode[]): { text: string; hasNonText: boolean } {
+  let text = '';
+  let hasNonText = false;
+
+  if (!nodes) return { text, hasNonText };
+
+  for (const node of nodes) {
+    if (node.text) {
+      text += node.text;
+    }
+    if (node.type && node.type !== 'text') {
+      hasNonText = true;
+    }
+    if (node.content) {
+      const child = collectUndoSliceText(node.content);
+      text += child.text;
+      if (child.hasNonText) hasNonText = true;
+    }
+  }
+
+  return { text, hasNonText };
+}
 
 function normalizeTrackChangesViewMode(value: unknown): SuggestionDisplayMode {
   if (value === 'simple' || value === 'no-markup' || value === 'original') return value;
@@ -1089,6 +1123,7 @@ class ProofEditorImpl implements ProofEditor {
   private isReadOnly: boolean = false;
   private shareAllowLocalEdits: boolean = true;
   private shareContentFilterEnabled: boolean = false;
+  private lastAppliedEditableState: boolean | null = null;
   private readOnlyBanner: HTMLElement | null = null;
   private reviewLockCount: number = 0;
   private reviewLockReason: string | null = null;
@@ -1124,6 +1159,7 @@ class ProofEditorImpl implements ProofEditor {
   private redoSnapshotStack: string[] = [];
   private currentUndoSnapshot: string | null = null;
   private suppressUndoSnapshotCapture: boolean = false;
+  private undoTypingGroupActive: boolean = false;
   private pendingProjectionPublish: boolean = false;
   private trackChangesViewMode: SuggestionDisplayMode = getInitialTrackChangesViewMode();
   private pendingDomSuggestionSelection: MarkRange | null = null;
@@ -1345,8 +1381,6 @@ class ProofEditorImpl implements ProofEditor {
           const serializer = _ctx.get(serializerCtx);
           if (!this.currentUndoSnapshot) {
             this.resetUndoSnapshots(view, serializer);
-          } else if (!this.suppressUndoSnapshotCapture && (!this.collabEnabled || view.hasFocus())) {
-            this.recordUndoSnapshot(view, serializer);
           }
           this.scheduleContentSync();
         });
@@ -2364,17 +2398,24 @@ class ProofEditorImpl implements ProofEditor {
     }, 2_000);
   }
 
+  private hasRecentLocalCollabEditingActivity(now = Date.now()): boolean {
+    return this.pendingProjectionPublish
+      || this.contentSyncTimeout !== null
+      || (now - this.lastLocalTypingAt) < this.collabTypingRecoveryGraceMs;
+  }
+
   private shouldPreservePendingLocalCollabState(): boolean {
-    return this.collabCanEdit
-      && (this.collabUnsyncedChanges > 0 || this.collabPendingLocalUpdates > 0);
+    if (!this.collabCanEdit) return false;
+    const now = Date.now();
+    return this.collabUnsyncedChanges > 0
+      || this.collabPendingLocalUpdates > 0
+      || this.hasRecentLocalCollabEditingActivity(now);
   }
 
   private shouldDeferExpiringCollabRefresh(now: number): boolean {
     if (!this.collabCanEdit) return false;
     if (this.shouldPreservePendingLocalCollabState()) return true;
-    if (this.pendingProjectionPublish) return true;
-    if (this.contentSyncTimeout !== null) return true;
-    return (now - this.lastLocalTypingAt) < this.collabTypingRecoveryGraceMs;
+    return this.hasRecentLocalCollabEditingActivity(now);
   }
 
   private updateCollabHealthWindow(status: CollabSyncStatus): void {
@@ -2395,10 +2436,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.collabEnabled || !this.activeCollabSession) return;
     if (this.collabUnhealthySinceMs === null) return;
     const now = Date.now();
-    if (
-      this.collabUnsyncedChanges > 0
-      && (now - this.lastLocalTypingAt) < this.collabTypingRecoveryGraceMs
-    ) {
+    if (this.collabCanEdit && this.shouldPreservePendingLocalCollabState()) {
       return;
     }
     if ((now - this.collabUnhealthySinceMs) < this.collabRecoveryDelayMs) return;
@@ -2601,8 +2639,6 @@ class ProofEditorImpl implements ProofEditor {
     const awaitingTemplateSeed = Boolean(this.pendingCollabTemplateMarkdown && this.pendingCollabTemplateMarkdown.length > 0);
     const baseAllowLocalEdits = this.collabEnabled
       && this.collabCanEdit
-      && this.collabConnectionStatus === 'connected'
-      && this.collabIsSynced
       && !awaitingTemplateSeed;
     const hydrated = !baseAllowLocalEdits ? true : this.isCollabHydratedForEditing();
     if (baseAllowLocalEdits && !hydrated) {
@@ -2610,16 +2646,19 @@ class ProofEditorImpl implements ProofEditor {
       this.kickCollabHydration();
     }
     const allowLocalEdits = baseAllowLocalEdits && hydrated;
+    const nextContentFilterEnabled = this.collabEnabled && !this.collabCanEdit;
+    const gateChanged = this.shareAllowLocalEdits !== allowLocalEdits;
+    const filterChanged = this.shareContentFilterEnabled !== nextContentFilterEnabled;
     this.shareAllowLocalEdits = allowLocalEdits;
     // Only block content mutations for true view-only sessions.
     // Avoid using filterTransaction as a temporary "sync lock", since it can deadlock hydration.
-    this.setShareContentFilterEnabled(this.collabEnabled && !this.collabCanEdit);
+    this.setShareContentFilterEnabled(nextContentFilterEnabled);
     setShareRuntimeCapabilities({
       canComment: this.collabCanComment,
       canEdit: this.collabCanEdit,
     });
+    if (!gateChanged && !filterChanged) return;
     this.updateEditableState();
-    this.updateShareBannerTitleDisplay();
   }
 
   private ensureShareWebSocketConnection(): void {
@@ -3477,12 +3516,20 @@ class ProofEditorImpl implements ProofEditor {
     const shouldPulse = this.collabConnectionStatus === 'connecting'
       || (this.collabConnectionStatus === 'connected' && (!this.collabIsSynced || this.collabUnsyncedChanges > 0));
 
-    this.shareBannerSyncDotEl.style.background = syncStatus.color;
-    if (shouldPulse) {
-      this.ensureShareStatusPulseStyle();
-      this.shareBannerSyncDotEl.style.animation = 'shareStatusPulse 1.2s ease-in-out infinite';
-    } else {
-      this.shareBannerSyncDotEl.style.animation = '';
+    if (this.shareBannerSyncDotEl.dataset.syncColor !== syncStatus.color) {
+      this.shareBannerSyncDotEl.style.background = syncStatus.color;
+      this.shareBannerSyncDotEl.dataset.syncColor = syncStatus.color;
+    }
+
+    const nextPulseState = shouldPulse ? 'pulse' : 'steady';
+    if (this.shareBannerSyncDotEl.dataset.syncPulse !== nextPulseState) {
+      if (shouldPulse) {
+        this.ensureShareStatusPulseStyle();
+        this.shareBannerSyncDotEl.style.animation = 'shareStatusPulse 1.2s ease-in-out infinite';
+      } else {
+        this.shareBannerSyncDotEl.style.animation = '';
+      }
+      this.shareBannerSyncDotEl.dataset.syncPulse = nextPulseState;
     }
 
     const statusText = this.getSyncStatusTextLabel(syncStatus.label);
@@ -3491,10 +3538,13 @@ class ProofEditorImpl implements ProofEditor {
       this.shareBannerSyncLabelEl.textContent = statusText;
       this.shareBannerSyncLabelEl.dataset.statusText = statusText;
     }
-    this.shareBannerSyncLabelEl.dataset.visible = shouldShowText ? 'true' : 'false';
-    this.shareBannerSyncLabelEl.style.opacity = shouldShowText ? '1' : '0';
-    this.shareBannerSyncLabelEl.style.visibility = shouldShowText ? 'visible' : 'hidden';
-    this.shareBannerSyncLabelEl.setAttribute('aria-hidden', shouldShowText ? 'false' : 'true');
+    const nextVisibility = shouldShowText ? 'true' : 'false';
+    if (this.shareBannerSyncLabelEl.dataset.visible !== nextVisibility) {
+      this.shareBannerSyncLabelEl.dataset.visible = nextVisibility;
+      this.shareBannerSyncLabelEl.style.opacity = shouldShowText ? '1' : '0';
+      this.shareBannerSyncLabelEl.style.visibility = shouldShowText ? 'visible' : 'hidden';
+      this.shareBannerSyncLabelEl.setAttribute('aria-hidden', shouldShowText ? 'false' : 'true');
+    }
   }
 
   private canToggleTrackChanges(): boolean {
@@ -3512,10 +3562,16 @@ class ProofEditorImpl implements ProofEditor {
     const canToggle = this.canToggleTrackChanges();
     const container = editButton.parentElement as HTMLElement | null;
     if (container) {
-      container.style.display = canToggle ? 'inline-flex' : 'none';
+      const nextDisplay = canToggle ? 'inline-flex' : 'none';
+      if (container.dataset.trackToggleDisplay !== nextDisplay) {
+        container.style.display = nextDisplay;
+        container.dataset.trackToggleDisplay = nextDisplay;
+      }
     }
 
     const applyState = (button: HTMLButtonElement, active: boolean, title: string) => {
+      const nextState = `${canToggle}:${active}:${title}`;
+      if (button.dataset.trackToggleState === nextState) return;
       button.disabled = !canToggle || active;
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
       button.title = canToggle ? title : 'Track changes is currently unavailable';
@@ -3524,6 +3580,7 @@ class ProofEditorImpl implements ProofEditor {
       button.style.boxShadow = active ? '0 1px 2px rgba(17,24,39,0.16)' : 'none';
       button.style.opacity = canToggle ? '1' : '0.5';
       button.style.cursor = !canToggle || active ? 'default' : 'pointer';
+      button.dataset.trackToggleState = nextState;
     };
 
     applyState(editButton, !enabled, 'Make direct edits (Cmd/Ctrl+Shift+E)');
@@ -3539,10 +3596,13 @@ class ProofEditorImpl implements ProofEditor {
     const hasUndo = canUseHistory && (this.collabEnabled ? this.undoSnapshotStack.length > 0 : true);
     const hasRedo = canUseHistory && (this.collabEnabled ? this.redoSnapshotStack.length > 0 : true);
     const applyState = (button: HTMLButtonElement, enabled: boolean, title: string) => {
+      const nextState = `${enabled}:${title}`;
+      if (button.dataset.historyState === nextState) return;
       button.disabled = !enabled;
       button.title = enabled ? title : 'Nothing to undo or redo yet';
       button.style.opacity = enabled ? '1' : '0.45';
       button.style.cursor = enabled ? 'pointer' : 'default';
+      button.dataset.historyState = nextState;
     };
 
     applyState(undoButton, hasUndo, 'Undo (Cmd/Ctrl+Z)');
@@ -5252,6 +5312,11 @@ class ProofEditorImpl implements ProofEditor {
       && this.reviewLockCount === 0
       && (!this.isShareMode || this.shareAllowLocalEdits);
 
+    if (!viewOverride && this.lastAppliedEditableState === isEditable) {
+      this.updateShareBannerTrackChangesDisplay();
+      return;
+    }
+
     const applyEditableState = (view: EditorView) => {
       view.setProps({
         editable: () => isEditable,
@@ -5260,6 +5325,7 @@ class ProofEditorImpl implements ProofEditor {
 
     if (viewOverride) {
       applyEditableState(viewOverride);
+      this.lastAppliedEditableState = isEditable;
       this.updateShareBannerTrackChangesDisplay();
       return;
     }
@@ -5269,6 +5335,7 @@ class ProofEditorImpl implements ProofEditor {
       const view = ctx.get(editorViewCtx);
       applyEditableState(view);
     });
+    this.lastAppliedEditableState = isEditable;
     this.updateShareBannerTrackChangesDisplay();
   }
 
@@ -5475,6 +5542,54 @@ class ProofEditorImpl implements ProofEditor {
     this.lastLocalTypingAt = Date.now();
   }
 
+  private getUndoSnapshotIntent(transaction: any, state: EditorState): UndoSnapshotIntent | null {
+    if (!transaction?.docChanged) return null;
+
+    let insertedText = '';
+    let deletedText = '';
+    let hasTextReplaceStep = false;
+
+    for (const step of transaction.steps ?? []) {
+      const stepJson = step?.toJSON?.() as {
+        stepType?: string;
+        from?: number;
+        to?: number;
+        slice?: { content?: UndoSliceNode[] };
+      } | undefined;
+
+      if (!stepJson) return null;
+
+      if (stepJson.stepType === 'replace') {
+        const { text, hasNonText } = collectUndoSliceText(stepJson.slice?.content);
+        if (hasNonText) return null;
+        hasTextReplaceStep = true;
+        insertedText += text;
+
+        const from = typeof stepJson.from === 'number' ? stepJson.from : 0;
+        const to = typeof stepJson.to === 'number' ? stepJson.to : from;
+        if (to > from) {
+          deletedText += state.doc.textBetween(from, to, '');
+        }
+        continue;
+      }
+
+      if (stepJson.stepType === 'addMark' || stepJson.stepType === 'removeMark') {
+        continue;
+      }
+
+      return null;
+    }
+
+    if (!hasTextReplaceStep || deletedText.length > 0 || insertedText.length === 0) {
+      return null;
+    }
+
+    return {
+      coalesce: true,
+      continueGroupAfter: !/[\s\u00A0]/.test(insertedText),
+    };
+  }
+
   private isYjsChangeOriginTransaction(transaction: any): boolean {
     const ySyncMeta = transaction?.getMeta?.(ySyncPluginKey) as { isChangeOrigin?: boolean } | undefined;
     if (ySyncMeta?.isChangeOrigin === true) return true;
@@ -5552,7 +5667,9 @@ class ProofEditorImpl implements ProofEditor {
 
       // Override dispatchTransaction to intercept edits
       (view as any).dispatch = (tr: any) => {
-        const dispatchWithRevision = (transaction: any) => {
+        const undoSnapshotIntent = this.getUndoSnapshotIntent(tr, view.state);
+
+        const dispatchWithRevision = (transaction: any, intent: UndoSnapshotIntent | null = null) => {
           originalDispatch(transaction);
           if (transaction?.docChanged) {
             this.revision += 1;
@@ -5563,7 +5680,7 @@ class ProofEditorImpl implements ProofEditor {
             && transaction.getMeta?.('history$') === undefined
             && !this.isYjsChangeOriginTransaction(transaction);
           if (shouldCaptureUndoSnapshot) {
-            this.recordUndoSnapshot(view, serializer);
+            this.recordUndoSnapshot(view, serializer, intent);
           }
         };
         const beforeSelectionFrom = view.state.selection.from;
@@ -5592,20 +5709,20 @@ class ProofEditorImpl implements ProofEditor {
         if (suggestionsEnabled && tr.docChanged) {
           // Don't intercept meta transactions (like enabling/disabling suggestions)
           if (tr.getMeta(suggestionsPluginKey) !== undefined) {
-            dispatchWithRevision(tr);
+            dispatchWithRevision(tr, undoSnapshotIntent);
             return;
           }
 
           // Don't intercept marks operations (accept/reject suggestions)
           // These are internal operations that should not be converted to suggestions
           if (tr.getMeta(marksPluginKey) !== undefined) {
-            dispatchWithRevision(tr);
+            dispatchWithRevision(tr, undoSnapshotIntent);
             return;
           }
 
           // Don't intercept document load transactions
           if (tr.getMeta('document-load') !== undefined) {
-            dispatchWithRevision(tr);
+            dispatchWithRevision(tr, undoSnapshotIntent);
             return;
           }
 
@@ -5617,7 +5734,7 @@ class ProofEditorImpl implements ProofEditor {
 
           // Don't intercept undo/redo transactions (from history plugin)
           if (tr.getMeta('history$') !== undefined || tr.getMeta('addToHistory') === false) {
-            dispatchWithRevision(tr);
+            dispatchWithRevision(tr, undoSnapshotIntent);
             return;
           }
 
@@ -5629,12 +5746,12 @@ class ProofEditorImpl implements ProofEditor {
 
           // Wrap the transaction to convert edits to suggestions
           const wrappedTr = wrapTransactionForSuggestions(tr, view.state, true);
-          dispatchWithRevision(wrappedTr);
+          dispatchWithRevision(wrappedTr, undoSnapshotIntent);
         } else {
           if (tr?.docChanged) {
             this.pendingDomSuggestionSelection = null;
           }
-          dispatchWithRevision(tr);
+          dispatchWithRevision(tr, undoSnapshotIntent);
         }
 
         this.stabilizeCursorAfterRemoteYjsTransaction(
@@ -6882,6 +6999,7 @@ class ProofEditorImpl implements ProofEditor {
     this.currentUndoSnapshot = snapshot;
     this.undoSnapshotStack = [];
     this.redoSnapshotStack = [];
+    this.undoTypingGroupActive = false;
     this.updateShareBannerHistoryDisplay();
   }
 
@@ -6893,12 +7011,17 @@ class ProofEditorImpl implements ProofEditor {
     });
   }
 
-  private recordUndoSnapshot(view: EditorView, serializer: any): void {
+  private recordUndoSnapshot(
+    view: EditorView,
+    serializer: any,
+    intent: UndoSnapshotIntent | null = null,
+  ): void {
     if (this.suppressUndoSnapshotCapture) return;
     const snapshot = this.serializeUndoSnapshot(view, serializer);
     if (!snapshot || snapshot === this.currentUndoSnapshot) return;
 
-    if (this.currentUndoSnapshot) {
+    const shouldCoalesceWithPrevious = Boolean(intent?.coalesce && this.undoTypingGroupActive);
+    if (!shouldCoalesceWithPrevious && this.currentUndoSnapshot) {
       this.undoSnapshotStack.push(this.currentUndoSnapshot);
       if (this.undoSnapshotStack.length > 100) {
         this.undoSnapshotStack.shift();
@@ -6906,6 +7029,7 @@ class ProofEditorImpl implements ProofEditor {
     }
     this.currentUndoSnapshot = snapshot;
     this.redoSnapshotStack = [];
+    this.undoTypingGroupActive = Boolean(intent?.coalesce && intent.continueGroupAfter);
     this.updateShareBannerHistoryDisplay();
   }
 
@@ -6913,6 +7037,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!this.editor) return false;
 
     this.suppressUndoSnapshotCapture = true;
+    this.undoTypingGroupActive = false;
     try {
       this.loadDocument(snapshot, {
         allowShareContentMutation: this.isShareMode,
@@ -9082,9 +9207,12 @@ class ProofEditorImpl implements ProofEditor {
         const actor = getCurrentActor();
         void shareClient.acceptSuggestion(markId, actor).then((result) => {
           if (!result || 'error' in result || result.success !== true) return;
-          const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-            ? result.marks as Record<string, StoredMark>
-            : null;
+          const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(
+            markId,
+            (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
+              ? result.marks as Record<string, StoredMark>
+              : null,
+          );
           if (!serverMarks) return;
           this.lastReceivedServerMarks = { ...serverMarks };
           this.initialMarksSynced = true;
@@ -9133,9 +9261,12 @@ class ProofEditorImpl implements ProofEditor {
         const actor = getCurrentActor();
         void shareClient.rejectSuggestion(markId, actor).then((result) => {
           if (!result || 'error' in result || result.success !== true) return;
-          const serverMarks = (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
-            ? result.marks as Record<string, StoredMark>
-            : null;
+          const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(
+            markId,
+            (result.marks && typeof result.marks === 'object' && !Array.isArray(result.marks))
+              ? result.marks as Record<string, StoredMark>
+              : null,
+          );
           if (!serverMarks) return;
           this.lastReceivedServerMarks = { ...serverMarks };
           this.initialMarksSynced = true;
@@ -9191,6 +9322,20 @@ class ProofEditorImpl implements ProofEditor {
     return null;
   }
 
+  private sanitizeFinalizedSuggestionServerMarks(
+    markId: string,
+    serverMarks: Record<string, StoredMark> | null,
+  ): Record<string, StoredMark> | null {
+    if (!serverMarks) return null;
+    if (!Object.prototype.hasOwnProperty.call(serverMarks, markId)) {
+      return serverMarks;
+    }
+
+    const sanitized = { ...serverMarks };
+    delete sanitized[markId];
+    return sanitized;
+  }
+
   private async backfillMissingShareSuggestionMetadata(
     plan: { markIds: string[] | null },
     actor: string,
@@ -9224,7 +9369,8 @@ class ProofEditorImpl implements ProofEditor {
       );
       if (entries.length > 0 && this.collabEnabled && this.collabCanEdit) {
         const serializer = ctx.get(serializerCtx);
-        projectionMarkdown = this.normalizeMarkdownForRuntime(serializer(view.state.doc));
+        const serialized = this.normalizeMarkdownForRuntime(serializer(view.state.doc));
+        projectionMarkdown = extractMarks(serialized).content;
       }
     });
 
@@ -9330,6 +9476,7 @@ class ProofEditorImpl implements ProofEditor {
       return this.markAccept(markId);
     }
 
+    this.flushShareMarks({ keepalive: true });
     const actor = getCurrentActor();
     const result = await shareClient.acceptSuggestion(markId, actor);
     const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);
@@ -9342,9 +9489,12 @@ class ProofEditorImpl implements ProofEditor {
       return false;
     }
 
-    const serverMarks = (effectiveResult.marks && typeof effectiveResult.marks === 'object' && !Array.isArray(effectiveResult.marks))
-      ? effectiveResult.marks as Record<string, StoredMark>
-      : null;
+    const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(
+      markId,
+      (effectiveResult.marks && typeof effectiveResult.marks === 'object' && !Array.isArray(effectiveResult.marks))
+        ? effectiveResult.marks as Record<string, StoredMark>
+        : null,
+    );
 
     if (serverMarks) {
       this.lastReceivedServerMarks = { ...serverMarks };
@@ -9394,6 +9544,7 @@ class ProofEditorImpl implements ProofEditor {
       return this.markReject(markId);
     }
 
+    this.flushShareMarks({ keepalive: true });
     const actor = getCurrentActor();
     const result = await shareClient.rejectSuggestion(markId, actor);
     const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);
@@ -9406,9 +9557,12 @@ class ProofEditorImpl implements ProofEditor {
       return false;
     }
 
-    const serverMarks = (effectiveResult.marks && typeof effectiveResult.marks === 'object' && !Array.isArray(effectiveResult.marks))
-      ? effectiveResult.marks as Record<string, StoredMark>
-      : null;
+    const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(
+      markId,
+      (effectiveResult.marks && typeof effectiveResult.marks === 'object' && !Array.isArray(effectiveResult.marks))
+        ? effectiveResult.marks as Record<string, StoredMark>
+        : null,
+    );
 
     if (serverMarks) {
       this.lastReceivedServerMarks = { ...serverMarks };

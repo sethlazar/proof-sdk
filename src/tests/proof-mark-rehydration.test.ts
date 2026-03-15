@@ -602,6 +602,59 @@ async function run(): Promise<void> {
       'Expected preserved unrelated suggestion metadata to remain pending after accepting a different suggestion',
     );
 
+    const duplicateInsertSlug = `rehydrate-duplicate-insert-${Math.random().toString(36).slice(2, 10)}`;
+    const duplicateInsertMarkId = 'duplicate-insert-accept';
+    const duplicateInsertQuote = 'reveals shortcuts. It woudlf be nice';
+    const duplicateInsertBase = `We should have something in the menu bar that ${duplicateInsertQuote} ${duplicateInsertQuote}`;
+    const duplicateInsertAnchors = buildRelativeAnchors(duplicateInsertBase, duplicateInsertQuote);
+    db.createDocument(
+      duplicateInsertSlug,
+      `We should have something in the menu bar that <span data-proof="suggestion" data-id="${duplicateInsertMarkId}" data-by="human:test" data-kind="insert">${duplicateInsertQuote}</span> ${duplicateInsertQuote}`,
+      canonicalizeStoredMarks({
+        [duplicateInsertMarkId]: {
+          kind: 'insert',
+          by: 'human:test',
+          createdAt,
+          quote: duplicateInsertQuote,
+          content: duplicateInsertQuote,
+          status: 'pending',
+          startRel: `char:${Number.parseInt(duplicateInsertAnchors.startRel.slice(5), 10) + 1}`,
+          endRel: `char:${Number.parseInt(duplicateInsertAnchors.endRel.slice(5), 10) + 1}`,
+          range: {
+            from: duplicateInsertAnchors.range.from + 1,
+            to: duplicateInsertAnchors.range.to + 1,
+          },
+        } satisfies StoredMark,
+      }),
+      'Duplicate insertion accept should recover nearby anchors',
+    );
+
+    const duplicateInsertAccept = await executeDocumentOperationAsync(duplicateInsertSlug, 'POST', '/marks/accept', {
+      markId: duplicateInsertMarkId,
+      by: 'human:test',
+    });
+    assertEqual(
+      duplicateInsertAccept.status,
+      200,
+      `Expected duplicate insertion accept to recover nearby anchors, got ${duplicateInsertAccept.status}`,
+    );
+    const duplicateInsertDoc = db.getDocumentBySlug(duplicateInsertSlug);
+    assert(
+      !(duplicateInsertDoc?.markdown ?? '').includes('data-proof="suggestion"'),
+      'Expected duplicate insertion accept to remove the suggestion wrapper after recovering the nearby quote anchor',
+    );
+    const duplicateInsertText = stripAllProofSpanTags(duplicateInsertDoc?.markdown ?? '');
+    assertEqual(
+      duplicateInsertText.split(duplicateInsertQuote).length - 1,
+      2,
+      'Expected duplicate insertion accept to preserve both visible copies of the repeated insertion text',
+    );
+    const duplicateInsertMarks = parseStoredMarks(duplicateInsertDoc?.marks ?? '');
+    assert(
+      !(duplicateInsertMarkId in duplicateInsertMarks),
+      'Expected duplicate insertion accept to clear the accepted insertion metadata',
+    );
+
     const authoredBeforeText = 'Lead authored text.';
     const authoredAfterText = 'Tail authored text.';
     const authoredQuote = 'Middle legacy quote that should stay anchored.';

@@ -16,9 +16,11 @@ function sliceBetween(source: string, startNeedle: string, endNeedle: string): s
 function run(): void {
   const editorSource = readFileSync(path.resolve(process.cwd(), 'src/editor/index.ts'), 'utf8');
   const editorHtmlSource = readFileSync(path.resolve(process.cwd(), 'src/index.html'), 'utf8');
+  const keybindingConfigSource = readFileSync(path.resolve(process.cwd(), 'src/editor/keybindings-config.ts'), 'utf8');
   const keybindingsSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/keybindings.ts'), 'utf8');
   const marksSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/marks.ts'), 'utf8');
   const popoverSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/mark-popover.ts'), 'utf8');
+  const contextMenuSource = readFileSync(path.resolve(process.cwd(), 'src/ui/context-menu.ts'), 'utf8');
   const suggestionsSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/suggestions.ts'), 'utf8');
   const collabCursorSource = readFileSync(path.resolve(process.cwd(), 'src/editor/plugins/collab-cursors.ts'), 'utf8');
   const shareClientSource = readFileSync(path.resolve(process.cwd(), 'src/bridge/share-client.ts'), 'utf8');
@@ -69,15 +71,27 @@ function run(): void {
     'Expected the share menu to expose the extra Word-style track-changes modes',
   );
   assert(
-    keybindingsSource.includes("'Mod-Alt-a': acceptActiveSuggestionCommand")
-      && keybindingsSource.includes("'Mod-Alt-r': rejectActiveSuggestionCommand")
-      && keybindingsSource.includes("'Mod-Alt-]': navigateNextSuggestionCommand")
-      && keybindingsSource.includes("'Mod-Alt-[': navigatePrevSuggestionCommand")
-      && keybindingsSource.includes("'Mod-Shift-e': toggleSuggestionsCommand")
-      && keybindingsSource.includes('acceptSuggestionMark(view, activeId);')
-      && keybindingsSource.includes('void proof.markAcceptPersisted(activeId);')
-      && keybindingsSource.includes('void proof.markRejectPersisted(activeId);'),
-    'Expected dedicated keyboard shortcuts for accepting, rejecting, navigating, and toggling suggestions, with optimistic local accept updates before share persistence finishes',
+    keybindingConfigSource.includes("acceptSuggestionAndNext: 'Mod-Alt-a'")
+      && keybindingConfigSource.includes("rejectSuggestionAndNext: 'Mod-Alt-r'")
+      && keybindingConfigSource.includes("undo: 'Mod-z'")
+      && keybindingConfigSource.includes("redo: 'Mod-Shift-z'")
+      && keybindingConfigSource.includes("nextSuggestion: 'Mod-Alt-]'")
+      && keybindingConfigSource.includes("prevSuggestion: 'Mod-Alt-['")
+      && keybindingConfigSource.includes("toggleTrackChanges: 'Mod-Shift-e'")
+      && keybindingsSource.includes("import { proofKeybindingConfig } from '../keybindings-config';")
+      && keybindingsSource.includes('[proofKeybindingConfig.undo]: undoCommand')
+      && keybindingsSource.includes('[proofKeybindingConfig.redo]: redoCommand')
+      && keybindingsSource.includes('if (!proof?.undo) return false;')
+      && keybindingsSource.includes('if (!proof?.redo) return false;')
+      && keybindingsSource.includes('[proofKeybindingConfig.acceptSuggestionAndNext]: acceptActiveSuggestionCommand')
+      && keybindingsSource.includes('[proofKeybindingConfig.rejectSuggestionAndNext]: rejectActiveSuggestionCommand')
+      && keybindingsSource.includes('[proofKeybindingConfig.nextSuggestion]: navigateNextSuggestionCommand')
+      && keybindingsSource.includes('[proofKeybindingConfig.prevSuggestion]: navigatePrevSuggestionCommand')
+      && keybindingsSource.includes('[proofKeybindingConfig.toggleTrackChanges]: toggleSuggestionsCommand')
+      && keybindingsSource.includes('const nextSuggestionId = getSuggestionReviewFollowupId(state, activeId);')
+      && keybindingsSource.includes("persistSuggestionReviewAndAdvance(activeId, nextSuggestionId, 'accept');")
+      && keybindingsSource.includes("persistSuggestionReviewAndAdvance(activeId, nextSuggestionId, 'reject');"),
+    'Expected dedicated keyboard shortcuts to live in a shared config file, including native undo/redo bindings and advance review after accepting or rejecting suggestions',
   );
   assert(
     editorSource.includes('private createTrackChangesModeToggle(): HTMLElement {')
@@ -91,7 +105,12 @@ function run(): void {
       && editorSource.includes('private undoSnapshotStack: string[] = [];')
       && editorSource.includes('private redoSnapshotStack: string[] = [];')
       && editorSource.includes('private currentUndoSnapshot: string | null = null;')
+      && editorSource.includes('private undoTypingGroupActive: boolean = false;')
+      && editorSource.includes('private getUndoSnapshotIntent(transaction: any, state: EditorState): UndoSnapshotIntent | null {')
       && editorSource.includes('private recordUndoSnapshot(')
+      && editorSource.includes('const shouldCoalesceWithPrevious = Boolean(intent?.coalesce && this.undoTypingGroupActive);')
+      && editorSource.includes('this.undoTypingGroupActive = Boolean(intent?.coalesce && intent.continueGroupAfter);')
+      && editorSource.includes('const undoSnapshotIntent = this.getUndoSnapshotIntent(tr, view.state);')
       && editorSource.includes('private ensureUndoSnapshotInitialized(): void {')
       && editorSource.includes('private restoreUndoSnapshot(snapshot: string): boolean {')
       && editorSource.includes('preserveHistory: true,')
@@ -108,7 +127,7 @@ function run(): void {
       && editorSource.includes('banner.replaceChildren(wordmark, separator, title, historyControls, trackChangesToggle')
       && editorSource.includes("container.className = 'share-pill-history-controls';")
       && editorSource.includes("button.className = 'share-pill-history-btn';"),
-    'Expected the share banner to expose undo/redo controls backed by a user-visible snapshot stack in share mode, with command fallbacks elsewhere',
+    'Expected the share banner to expose undo/redo controls backed by a user-visible snapshot stack in share mode, with word-level typing coalescing and command fallbacks elsewhere',
   );
   assert(
     suggestionsSource.includes("setMeta(suggestionsPluginKey, { enabled: true })")
@@ -121,8 +140,8 @@ function run(): void {
       && editorSource.includes("setMeta('addToHistory', false);")
       && editorSource.includes('if (!options?.preserveHistory) {')
       && editorSource.includes('this.resetUndoSnapshots(view, ctx.get(serializerCtx));')
-      && editorSource.includes('this.recordUndoSnapshot(view, serializer);'),
-    'Expected document-load, suggestion-toggle, mark rehydration, and heatmap bookkeeping transactions to stay out of the undo history',
+      && editorSource.includes('this.recordUndoSnapshot(view, serializer, intent);'),
+    'Expected document-load, suggestion-toggle, mark rehydration, and heatmap bookkeeping transactions to stay out of the undo history while typed content changes still record through the transaction-aware snapshot path',
   );
   assert(
     popoverSource.includes("view.dom.addEventListener('mousemove', this.handleEditorMouseMove);")
@@ -142,7 +161,14 @@ function run(): void {
       && popoverSource.includes("getSuggestionDisplayMode(this.view.state) !== 'simple'")
       && popoverSource.includes("this.suggestionRail.className = 'mark-suggestion-rail';")
       && popoverSource.includes("button.className = 'mark-suggestion-rail-button';")
-      && popoverSource.includes('button.textContent = String(item.markIds.length);')
+      && popoverSource.includes('const RAIL_JOIN_THRESHOLD_PX = 30;')
+      && popoverSource.includes('const connectPrev = prevCenterY !== null && (centerY - prevCenterY) <= RAIL_JOIN_THRESHOLD_PX;')
+      && popoverSource.includes('const connectNext = nextCenterY !== null && (nextCenterY - centerY) <= RAIL_JOIN_THRESHOLD_PX;')
+      && popoverSource.includes('const segmentWidth = isConnectedSegment ? 12 : 18;')
+      && popoverSource.includes("const borderRadius = connectPrev")
+      && popoverSource.includes("button.textContent = '';")
+      && popoverSource.includes("const badge = document.createElement('span');")
+      && popoverSource.includes('const labelText = item.markIds.length > 1 ? String(item.markIds.length) : \'\';')
       && popoverSource.includes("const changeLabel = item.markIds.length === 1 ? 'change' : 'changes';")
       && popoverSource.includes('button.title = `${item.markIds.length} pending ${changeLabel} on this line`;')
       && popoverSource.includes("matchesReviewShortcut(event, { key: 'a', code: 'KeyA' })")
@@ -156,10 +182,12 @@ function run(): void {
       && popoverSource.includes("document.removeEventListener('keydown', this.handleKeydown, true);")
       && popoverSource.includes("private runSuggestionReviewAction(")
       && popoverSource.includes('REVIEW_ACTION_MAX_RETRIES')
-      && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId);")
-      && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId);")
+      && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId, mark.kind);")
+      && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId, mark.kind);")
       && popoverSource.includes('const persistedAction = action === \'accept\'')
-      && popoverSource.includes('const optimisticApplied = runLocalActionOnly();')
+      && popoverSource.includes("suggestionKind: 'insert' | 'delete' | 'replace'")
+      && popoverSource.includes("const allowOptimisticAccept = action === 'accept' && suggestionKind !== 'insert';")
+      && popoverSource.includes('const optimisticApplied = allowOptimisticAccept ? runLocalActionOnly() : false;')
       && popoverSource.includes('return acceptSuggestion(this.view, markId);')
       && popoverSource.includes('setReviewButtonsBusy(true);')
       && popoverSource.includes('private getSuggestionReviewFollowupMarkId(')
@@ -169,12 +197,34 @@ function run(): void {
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
       && popoverSource.includes('preventMousePointerDown = false,')
       && popoverSource.includes('preventMouseDown = false,')
+      && popoverSource.includes("button.addEventListener('pointerdown', event => {")
       && popoverSource.includes("button.addEventListener('mousedown', event => {")
+      && popoverSource.includes('let skipSyntheticClick = false;')
+      && popoverSource.includes("if (event.pointerType === 'mouse' && (preventMousePointerDown || preventMouseDown)) {")
+      && popoverSource.includes('if (skipSyntheticClick) return;')
       && popoverSource.includes('if (preventMouseDown) {')
       && popoverSource.includes('preventMousePointerDown: true,')
       && popoverSource.includes('preventMouseDown: true,')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct open where appropriate, a simple-markup suggestion rail that still shows single-change counts, capture-phase review key handling, optimistic local review updates while share persistence settles, retry transient review actions, active suggestion navigation that advances after review, and first-click side-panel review buttons that suppress the desktop focus steal',
+    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct review entry points, a simple-markup suggestion rail that merges adjacent changed lines into a continuous narrow rail with rounded endcaps and only labels multi-change lines, capture-phase review key handling, optimistic local review updates while share persistence settles, retry transient review actions, active suggestion navigation that advances after review, and first-click side-panel review buttons that suppress the desktop focus steal',
+  );
+  assert(
+    contextMenuSource.includes('resolveSuggestionContext(')
+      && contextMenuSource.includes('suggestionContext')
+      && contextMenuSource.includes('data-action="accept-suggestion"')
+      && contextMenuSource.includes('data-action="reject-suggestion"')
+      && contextMenuSource.includes('data-action="review-suggestion"')
+      && contextMenuSource.includes('data-action="show-shortcuts"')
+      && contextMenuSource.includes("Keyboard shortcuts")
+      && contextMenuSource.includes('showShortcutsPopover();')
+      && contextMenuSource.includes('proofKeybindingConfig.acceptSuggestionAndNext')
+      && contextMenuSource.includes('await proof.markAcceptPersisted(markId);')
+      && contextMenuSource.includes('await proof.markRejectPersisted(markId);')
+      && contextMenuSource.includes('proof.markAccept(markId);')
+      && contextMenuSource.includes('proof.markReject(markId);')
+      && contextMenuSource.includes('proof.navigateToMark(markId);')
+      && contextMenuSource.includes('showContextMenu(view, e.clientX, e.clientY, e.target);'),
+    'Expected right-click review actions to be integrated into the shared editor context menu, prefer the persisted review API, and expose a keyboard-shortcuts reveal sourced from the shared keybinding config',
   );
   assert(
     marksSource.includes('function insertAcceptNeedsMaterialization(')
@@ -253,30 +303,56 @@ function run(): void {
       && markAcceptBlock.includes('this.lastReceivedServerMarks = { ...metadata };')
       && markAcceptBlock.includes('this.initialMarksSynced = true;')
       && markAcceptBlock.includes('void shareClient.acceptSuggestion(markId, actor).then((result) => {')
+      && markAcceptBlock.includes('const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(')
       && markAcceptBlock.includes("console.error('[markAccept] Failed to persist suggestion acceptance via share mutation:', error);"),
-    'Expected markAccept to apply locally first in share mode and then persist through the share mutation route',
+    'Expected markAccept to apply locally first in share mode, sanitize stale server suggestion payloads, and then persist through the share mutation route',
   );
 
   const markAcceptPersistedBlock = sliceBetween(editorSource, '  async markAcceptPersisted(markId: string): Promise<boolean> {', '\n  async markRejectPersisted(');
   assert(
     markAcceptPersistedBlock.includes('const result = await shareClient.acceptSuggestion(markId, actor);')
+      && markAcceptPersistedBlock.includes('this.flushShareMarks({ keepalive: true });')
       && markAcceptPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
       && markAcceptPersistedBlock.includes('await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)')
+      && markAcceptPersistedBlock.includes('const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(')
       && markAcceptPersistedBlock.includes('success = acceptMark(view, markId, parser);')
       && markAcceptPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
       && markAcceptPersistedBlock.includes('pruneMissingSuggestions: true'),
-    'Expected markAcceptPersisted to retry after hydrating missing share suggestion metadata and then prune resolved suggestions from the local share-mode UI',
+    'Expected markAcceptPersisted to flush fresh share marks, retry after hydrating missing share suggestion metadata, sanitize stale resolved suggestions, and then prune resolved suggestions from the local share-mode UI',
   );
 
   const markRejectPersistedBlock = sliceBetween(editorSource, '  async markRejectPersisted(markId: string): Promise<boolean> {', '\n  /**\n   * Accept all pending suggestions\n   */');
   assert(
     markRejectPersistedBlock.includes('const result = await shareClient.rejectSuggestion(markId, actor);')
+      && markRejectPersistedBlock.includes('this.flushShareMarks({ keepalive: true });')
       && markRejectPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
       && markRejectPersistedBlock.includes('await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)')
+      && markRejectPersistedBlock.includes('const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(')
       && markRejectPersistedBlock.includes('success = rejectMark(view, markId);')
       && markRejectPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
       && markRejectPersistedBlock.includes('pruneMissingSuggestions: true'),
-    'Expected markRejectPersisted to retry after hydrating missing share suggestion metadata and then prune resolved suggestions from the local share-mode UI',
+    'Expected markRejectPersisted to flush fresh share marks, retry after hydrating missing share suggestion metadata, sanitize stale resolved suggestions, and then prune resolved suggestions from the local share-mode UI',
+  );
+  const updateShareEditGateBlock = sliceBetween(editorSource, '  private updateShareEditGate(): void {', '\n  private ensureShareWebSocketConnection(): void {');
+  assert(
+    editorSource.includes('private sanitizeFinalizedSuggestionServerMarks(')
+      && editorSource.includes('delete sanitized[markId];')
+      && updateShareEditGateBlock.includes('const baseAllowLocalEdits = this.collabEnabled')
+      && updateShareEditGateBlock.includes('&& this.collabCanEdit')
+      && !updateShareEditGateBlock.includes("&& this.collabConnectionStatus === 'connected'")
+      && !updateShareEditGateBlock.includes('&& this.collabIsSynced')
+      && updateShareEditGateBlock.includes('const gateChanged = this.shareAllowLocalEdits !== allowLocalEdits;')
+      && updateShareEditGateBlock.includes('const filterChanged = this.shareContentFilterEnabled !== nextContentFilterEnabled;')
+      && updateShareEditGateBlock.includes('if (!gateChanged && !filterChanged) return;')
+      && editorSource.includes('private lastAppliedEditableState: boolean | null = null;'),
+    'Expected share editing to stay enabled through transient sync noise and stale server marks to be stripped before they can resurrect resolved suggestions',
+  );
+  assert(
+    suggestionsSource.includes('function findReusableInsertSuggestionCandidate(')
+      && suggestionsSource.includes('const reusableInsert = findReusableInsertSuggestionCandidate(')
+      && suggestionsSource.includes('const synced = syncEditableSuggestionMetadata(metadata, newTr.doc, suggestionType, reusableInsert);')
+      && suggestionsSource.includes('lastInsertByActor.set(actor, {'),
+    'Expected replacements inside pending insertions to reuse the existing insert suggestion id instead of fragmenting into a second suggestion that needs another accept',
   );
   assert(
     editorSource.includes('private getShareSuggestionBackfillPlan(')
@@ -285,6 +361,8 @@ function run(): void {
       && editorSource.includes('return { markIds: missingMarkIds.length > 0 ? missingMarkIds : null };')
       && editorSource.includes('metadata = entries.length > 0 ? Object.fromEntries(entries) : null;')
       && editorSource.includes('expectedQuotes = Object.fromEntries(')
+      && editorSource.includes('const serialized = this.normalizeMarkdownForRuntime(serializer(view.state.doc));')
+      && editorSource.includes('projectionMarkdown = extractMarks(serialized).content;')
       && editorSource.includes("this.publishProjectionMarkdown(view, projectionMarkdown, 'review-backfill');")
       && editorSource.includes('collabClient.setMarksMetadata(metadata as Record<string, StoredMark>);')
       && editorSource.includes('synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);')
@@ -339,8 +417,21 @@ function run(): void {
     acceptRouteBlock.includes('const collabStatus = await notifyCollabMutation(')
       && acceptRouteBlock.includes('verify: true')
       && acceptRouteBlock.includes("source: 'marks.accept'")
+      && acceptRouteBlock.includes("const canTreatCommittedAcceptAsVerified = !collabStatus.confirmed")
+      && acceptRouteBlock.includes("collabStatus.reason === 'markdown_mismatch'")
+      && acceptRouteBlock.includes('collabStatus.fragmentConfirmed === true')
+      && acceptRouteBlock.includes('collabStatus.canonicalConfirmed !== false')
+      && acceptRouteBlock.includes('if (canTreatCommittedAcceptAsVerified) {')
       && acceptRouteBlock.includes("code: 'COLLAB_SYNC_FAILED'"),
-    'Expected /marks/accept to await verified collab convergence before returning success',
+    'Expected /marks/accept to tolerate committed insertion accepts when only markdown verification is lagging',
+  );
+  assert(
+    editorSource.includes('private hasRecentLocalCollabEditingActivity(now = Date.now()): boolean {')
+      && editorSource.includes('this.pendingProjectionPublish')
+      && editorSource.includes('this.contentSyncTimeout !== null')
+      && editorSource.includes('(now - this.lastLocalTypingAt) < this.collabTypingRecoveryGraceMs')
+      && editorSource.includes('if (this.collabCanEdit && this.shouldPreservePendingLocalCollabState()) {'),
+    'Expected collab recovery to defer reconnects while recent local editing activity is still in flight',
   );
   assert(
     markRehydrationSource.includes("id.startsWith('serialized-authored:') || id.startsWith('authored:')")
