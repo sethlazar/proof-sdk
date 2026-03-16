@@ -5243,7 +5243,7 @@ class ProofEditorImpl implements ProofEditor {
     }, 0);
   }
 
-  private flushShareMarks(_options?: { keepalive?: boolean }): void {
+  private flushShareMarks(options?: { keepalive?: boolean; excludeMarkIds?: readonly string[] | null }): void {
     if (!this.isShareMode || !this.editor || this.suppressMarksSync) return;
     if (this.shareMarksFlushTimer !== null) {
       clearTimeout(this.shareMarksFlushTimer);
@@ -5253,18 +5253,29 @@ class ProofEditorImpl implements ProofEditor {
     this.editor.action((ctx) => {
       try {
         const view = ctx.get(editorViewCtx);
+        const excludedMarkIds = new Set(options?.excludeMarkIds ?? []);
         const localMetadata = getMarkMetadataWithQuotes(view.state);
-        const metadata = mergePendingServerMarks(localMetadata, this.lastReceivedServerMarks);
+        const filteredLocalMetadata = excludedMarkIds.size === 0
+          ? localMetadata
+          : Object.fromEntries(
+            Object.entries(localMetadata).filter(([markId]) => !excludedMarkIds.has(markId)),
+          ) as Record<string, StoredMark>;
+        const filteredServerMarks = excludedMarkIds.size === 0
+          ? this.lastReceivedServerMarks
+          : Object.fromEntries(
+            Object.entries(this.lastReceivedServerMarks).filter(([markId]) => !excludedMarkIds.has(markId)),
+          ) as Record<string, StoredMark>;
+        const metadata = mergePendingServerMarks(filteredLocalMetadata, filteredServerMarks);
         this.lastReceivedServerMarks = { ...metadata };
         this.initialMarksSynced = true;
         const serializer = ctx.get(serializerCtx);
         const markdown = this.normalizeMarkdownForRuntime(serializer(view.state.doc));
         if (this.collabEnabled && this.collabCanEdit) {
           this.publishProjectionMarkdown(view, markdown, 'marks-flush');
-          collabClient.setMarksMetadata(metadata);
+          collabClient.setMarksMetadata(metadata, { excludeMarkIds: excludedMarkIds });
         }
         if (!this.collabEnabled || !this.collabCanEdit || LEGACY_REST_FALLBACK) {
-          void shareClient.pushMarks(metadata, getCurrentActor(), { keepalive: Boolean(_options?.keepalive) });
+          void shareClient.pushMarks(metadata, getCurrentActor(), { keepalive: Boolean(options?.keepalive) });
         }
       } catch (error) {
         console.error('[flushShareMarks] Failed to push marks via collab runtime:', error);
@@ -9442,6 +9453,13 @@ class ProofEditorImpl implements ProofEditor {
     return sanitized;
   }
 
+  private isSuggestionStillPendingInView(view: EditorView, markId: string): boolean {
+    return getMarks(view.state).some((mark) => (
+      mark.id === markId
+      && (mark.kind === 'insert' || mark.kind === 'delete' || mark.kind === 'replace')
+    ));
+  }
+
   private async backfillMissingShareSuggestionMetadata(
     plan: { markIds: string[] | null },
     actor: string,
@@ -9607,7 +9625,7 @@ class ProofEditorImpl implements ProofEditor {
       return this.markAccept(markId);
     }
 
-    this.flushShareMarks({ keepalive: true });
+    this.flushShareMarks({ keepalive: true, excludeMarkIds: [markId] });
     const actor = getCurrentActor();
     const result = await shareClient.acceptSuggestion(markId, actor);
     const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);
@@ -9644,11 +9662,15 @@ class ProofEditorImpl implements ProofEditor {
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       const parser = ctx.get(parserCtx);
-      if (this.isShareMode) this.suppressMarksSync = true;
-      try {
-        success = acceptMark(view, markId, parser);
-      } finally {
-        if (this.isShareMode) this.suppressMarksSync = false;
+      const markStillPendingBeforeLocalAccept = this.isSuggestionStillPendingInView(view, markId);
+      let localAcceptApplied = false;
+      if (markStillPendingBeforeLocalAccept) {
+        if (this.isShareMode) this.suppressMarksSync = true;
+        try {
+          localAcceptApplied = acceptMark(view, markId, parser);
+        } finally {
+          if (this.isShareMode) this.suppressMarksSync = false;
+        }
       }
 
       if (serverMarks) {
@@ -9657,6 +9679,8 @@ class ProofEditorImpl implements ProofEditor {
           pruneMissingSuggestions: true,
         });
       }
+      const markStillPendingAfterLocalReconcile = this.isSuggestionStillPendingInView(view, markId);
+      success = localAcceptApplied || (!markStillPendingBeforeLocalAccept && !markStillPendingAfterLocalReconcile);
       // In the persisted review path, the server has already committed the accept
       // and the local ProseMirror transaction has already flowed through the
       // collab binding. Forcing another whole-document collab sync here can leave
@@ -9672,7 +9696,7 @@ class ProofEditorImpl implements ProofEditor {
       }
     });
 
-    return success || Boolean(serverMarks);
+    return success;
   }
 
   async markRejectPersisted(markId: string): Promise<boolean> {

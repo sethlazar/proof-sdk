@@ -185,6 +185,8 @@ function run(): void {
       && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId, mark.kind);")
       && popoverSource.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId, mark.kind);")
       && popoverSource.includes('const persistedAction = action === \'accept\'')
+      && popoverSource.includes("typeof proof?.markAcceptPersisted === 'function'")
+      && popoverSource.includes('() => proof.markAcceptPersisted(markId)')
       && popoverSource.includes("_suggestionKind: 'insert' | 'delete' | 'replace'")
       && popoverSource.includes('const allowOptimisticAccept = false;')
       && popoverSource.includes('const optimisticApplied = allowOptimisticAccept ? runLocalActionOnly() : false;')
@@ -332,7 +334,7 @@ function run(): void {
   const markAcceptPersistedBlock = sliceBetween(editorSource, '  async markAcceptPersisted(markId: string): Promise<boolean> {', '\n  async markRejectPersisted(');
   assert(
     markAcceptPersistedBlock.includes('const result = await shareClient.acceptSuggestion(markId, actor);')
-      && markAcceptPersistedBlock.includes('this.flushShareMarks({ keepalive: true });')
+      && markAcceptPersistedBlock.includes('this.flushShareMarks({ keepalive: true, excludeMarkIds: [markId] });')
       && markAcceptPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
       && markAcceptPersistedBlock.includes("const retriedResult = await this.retryShareSuggestionMutationAfterSync(markId, actor, 'accept', result);")
       && markAcceptPersistedBlock.includes('const effectiveBackfillPlan = this.getShareSuggestionBackfillPlan(markId, retriedResult) ?? backfillPlan;')
@@ -340,12 +342,24 @@ function run(): void {
       && markAcceptPersistedBlock.includes('const followupResult = effectiveBackfillPlan')
       && markAcceptPersistedBlock.includes("const effectiveResult = await this.retryShareSuggestionMutationAfterSync(")
       && markAcceptPersistedBlock.includes('const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(')
-      && markAcceptPersistedBlock.includes('success = acceptMark(view, markId, parser);')
+      && markAcceptPersistedBlock.includes('const markStillPendingBeforeLocalAccept = this.isSuggestionStillPendingInView(view, markId);')
+      && markAcceptPersistedBlock.includes('localAcceptApplied = acceptMark(view, markId, parser);')
+      && markAcceptPersistedBlock.includes('const markStillPendingAfterLocalReconcile = this.isSuggestionStillPendingInView(view, markId);')
+      && markAcceptPersistedBlock.includes('success = localAcceptApplied || (!markStillPendingBeforeLocalAccept && !markStillPendingAfterLocalReconcile);')
       && markAcceptPersistedBlock.includes('pruneMissingSuggestions: true')
+      && !markAcceptPersistedBlock.includes('return success || Boolean(serverMarks);')
       && !markAcceptPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
       && markAcceptPersistedBlock.includes('Let the existing suggestion engine and collab runtime')
       && markAcceptPersistedBlock.includes('replaying the whole state again.'),
-    'Expected markAcceptPersisted to retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, sanitize stale resolved suggestions, prune resolved suggestions from the local share-mode UI, and avoid a redundant full collab replay after the server has already committed the accept',
+    'Expected markAcceptPersisted to retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, skip a second local accept when the live collab state already cleared the suggestion, prune resolved suggestions from the local share-mode UI, and avoid a redundant full collab replay after the server has already committed the accept',
+  );
+  const flushShareMarksBlock = sliceBetween(editorSource, '  private flushShareMarks(', '\n  private showReadOnlyBanner(');
+  assert(
+    flushShareMarksBlock.includes('const excludedMarkIds = new Set(options?.excludeMarkIds ?? []);')
+      && flushShareMarksBlock.includes('const filteredLocalMetadata = excludedMarkIds.size === 0')
+      && flushShareMarksBlock.includes('const filteredServerMarks = excludedMarkIds.size === 0')
+      && flushShareMarksBlock.includes('collabClient.setMarksMetadata(metadata, { excludeMarkIds: excludedMarkIds });'),
+    'Expected share-mode mark flushes to omit explicitly resolving suggestion ids so persisted review actions do not republish the same pending mark back into collab before the server accept completes',
   );
 
   const markRejectPersistedBlock = sliceBetween(editorSource, '  async markRejectPersisted(markId: string): Promise<boolean> {', '\n  /**\n   * Accept all pending suggestions\n   */');

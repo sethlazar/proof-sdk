@@ -29,6 +29,14 @@ function run(): void {
     'Expected collab runtime to expose marks metadata writes',
   );
   assert(
+    source.includes('setMarksMetadata(')
+      && source.includes('options?: { excludeMarkIds?: Iterable<string> | null },')
+      && source.includes('const excludedMarkIds = new Set(options?.excludeMarkIds ?? []);')
+      && source.includes('delete mergedMarks[markId];')
+      && source.includes('if (excludedMarkIds.has(key)) return;'),
+    'Expected collab marks writes to support excluding resolving suggestion ids so local preservation does not resurrect them during persisted review actions',
+  );
+  assert(
     source.includes('if (session.syncProtocol !== \'pm-yjs-v1\')'),
     'Expected runtime to reject unsupported collab sync protocols',
   );

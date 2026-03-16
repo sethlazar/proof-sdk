@@ -739,15 +739,24 @@ export class CollabClient {
     return true;
   }
 
-  setMarksMetadata(marks: Record<string, unknown>): void {
+  setMarksMetadata(marks: Record<string, unknown>): void;
+  setMarksMetadata(
+    marks: Record<string, unknown>,
+    options?: { excludeMarkIds?: Iterable<string> | null },
+  ): void {
     if (!this.sessionRole || !this.canPersistDurableUpdates(this.sessionRole)) {
       this.debugLog('skip-marks-write-readonly', { markCount: Object.keys(marks).length });
       return;
     }
     if (!this.ydoc || !this.marksMap) return;
     const currentMarksSnapshot = this.readMarks();
+    const excludedMarkIds = new Set(options?.excludeMarkIds ?? []);
     const mergedMarks: Record<string, unknown> = { ...marks };
+    for (const markId of excludedMarkIds) {
+      delete mergedMarks[markId];
+    }
     this.marksMap.forEach((value, key) => {
+      if (excludedMarkIds.has(key)) return;
       if (mergedMarks[key] !== undefined) return;
       if (!shouldPreserveMissingLocalMark(value)) return;
       mergedMarks[key] = value as unknown;
