@@ -190,8 +190,13 @@ function run(): void {
       && popoverSource.includes('const optimisticApplied = allowOptimisticAccept ? runLocalActionOnly() : false;')
       && popoverSource.includes('return acceptSuggestion(this.view, markId);')
       && popoverSource.includes('setReviewButtonsBusy(true);')
+      && popoverSource.includes('private suggestionReviewFollowupTimer: number | null = null;')
+      && popoverSource.includes('private suggestionReviewTransitionPending: boolean = false;')
       && popoverSource.includes('private getSuggestionReviewFollowupMarkId(')
       && popoverSource.includes('private openSuggestionAfterReview(')
+      && popoverSource.includes('this.suggestionReviewTransitionPending = true;')
+      && popoverSource.includes("this.suggestionReviewFollowupTimer = window.setTimeout(() => {")
+      && popoverSource.includes('if (this.suggestionReviewTransitionPending) {')
       && popoverSource.includes('this.openSuggestionAfterReview(nextMarkId, markId);')
       && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
@@ -206,7 +211,7 @@ function run(): void {
       && popoverSource.includes('preventMousePointerDown: true,')
       && popoverSource.includes('preventMouseDown: true,')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct review entry points, a simple-markup suggestion rail that merges adjacent changed lines into a continuous narrow rail with rounded endcaps and only labels multi-change lines, capture-phase review key handling, persisted review actions that avoid share-mode accept races, retry transient review actions, active suggestion navigation that advances after review, and first-click side-panel review buttons that suppress the desktop focus steal',
+    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct review entry points, a simple-markup suggestion rail that merges adjacent changed lines into a continuous narrow rail with rounded endcaps and only labels multi-change lines, capture-phase review key handling, persisted review actions that avoid share-mode accept races, retry transient review actions, timer-backed followup reopening for sequential review, active suggestion navigation that advances after review, and first-click side-panel review buttons that suppress the desktop focus steal',
   );
   assert(
     contextMenuSource.includes('resolveSuggestionContext(')

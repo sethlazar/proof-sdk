@@ -485,6 +485,8 @@ class MarkPopoverController {
   private hoverPopoverActive: boolean = false;
   private activeSuggestionOpenedFromHover: boolean = false;
   private reviewActionRetryTimer: number | null = null;
+  private suggestionReviewFollowupTimer: number | null = null;
+  private suggestionReviewTransitionPending: boolean = false;
   private suggestionRailSignature: string = '';
 
   private getAdjacentSuggestionMarkId(currentMarkId: string, direction: 'next' | 'prev'): string | null {
@@ -528,25 +530,35 @@ class MarkPopoverController {
     reviewedMarkId: string,
   ): void {
     this.clearReviewActionRetryTimer();
+    if (this.suggestionReviewFollowupTimer !== null) {
+      window.clearTimeout(this.suggestionReviewFollowupTimer);
+      this.suggestionReviewFollowupTimer = null;
+    }
+    this.suggestionReviewTransitionPending = true;
 
-    const attempt = (remainingFrames: number): void => {
+    const attempt = (remainingAttempts: number): void => {
       const followupMarkId = this.getSuggestionReviewFollowupMarkId(preferredMarkId, reviewedMarkId);
       if (followupMarkId) {
+        this.suggestionReviewTransitionPending = false;
+        this.suggestionReviewFollowupTimer = null;
         this.openForMark(followupMarkId, undefined, { source: 'direct' });
         return;
       }
-      if (remainingFrames > 0) {
-        requestAnimationFrame(() => {
-          attempt(remainingFrames - 1);
-        });
+      if (remainingAttempts > 0) {
+        this.suggestionReviewFollowupTimer = window.setTimeout(() => {
+          this.suggestionReviewFollowupTimer = null;
+          attempt(remainingAttempts - 1);
+        }, 16);
         return;
       }
+      this.suggestionReviewTransitionPending = false;
       this.close();
     };
 
-    requestAnimationFrame(() => {
-      attempt(2);
-    });
+    this.suggestionReviewFollowupTimer = window.setTimeout(() => {
+      this.suggestionReviewFollowupTimer = null;
+      attempt(8);
+    }, 0);
   }
 
   private navigateToSuggestion(markId: string | null): void {
@@ -1523,6 +1535,11 @@ class MarkPopoverController {
     }
     this.stopSelectionPolling();
     this.clearReviewActionRetryTimer();
+    if (this.suggestionReviewFollowupTimer !== null) {
+      window.clearTimeout(this.suggestionReviewFollowupTimer);
+      this.suggestionReviewFollowupTimer = null;
+    }
+    this.suggestionReviewTransitionPending = false;
     if (this.viewportSyncRaf !== null) {
       cancelAnimationFrame(this.viewportSyncRaf);
       this.viewportSyncRaf = null;
@@ -1569,6 +1586,9 @@ class MarkPopoverController {
         const marks = getMarks(view.state);
         const mark = marks.find(item => item.id === this.activeMarkId);
         if (!mark) {
+          if (this.suggestionReviewTransitionPending) {
+            return;
+          }
           this.close();
           return;
         }
@@ -1634,6 +1654,11 @@ class MarkPopoverController {
     options?: { threadFocusMode?: ThreadFocusMode; source?: 'direct' | 'hover' },
   ): void {
     this.clearReviewActionRetryTimer();
+    if (this.suggestionReviewFollowupTimer !== null) {
+      window.clearTimeout(this.suggestionReviewFollowupTimer);
+      this.suggestionReviewFollowupTimer = null;
+    }
+    this.suggestionReviewTransitionPending = false;
     this.hideReviewContextMenu();
     const marks = getMarks(this.view.state);
     const mark = marks.find(item => item.id === markId);
@@ -1669,6 +1694,11 @@ class MarkPopoverController {
   }
 
   close(): void {
+    if (this.suggestionReviewFollowupTimer !== null) {
+      window.clearTimeout(this.suggestionReviewFollowupTimer);
+      this.suggestionReviewFollowupTimer = null;
+    }
+    this.suggestionReviewTransitionPending = false;
     this.hideReviewContextMenu();
     if (this.mode === null) {
       this.hideOverlayChrome();
