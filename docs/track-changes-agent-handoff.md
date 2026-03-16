@@ -13,6 +13,24 @@ The user goal is narrow and concrete:
 
 This branch already contains a large amount of working UI and behavior. The remaining work is reliability under real browser editing, especially after longer tracked-edit sessions.
 
+## Key Discovery: Preserve The Old Suggestion Engine
+
+Proof already had a substantial tracked-suggestions system before the new `Simple markup` UI work. That older approach is not dead weight. It is the main thing to preserve and harness.
+
+The guiding rule for all agents should be:
+
+- Keep the pre-existing suggestion and accept/reject machinery under the hood as far as possible.
+- Treat this project primarily as a UI and interaction redesign, not a backend reinvention.
+- Prefer making the old suggestion engine drive the new rail, panel, and simple-markup views.
+- Only replace core suggestion semantics if there is clear evidence the old approach cannot support the required user experience.
+
+In practice, this means the target is:
+
+- old suggestion architecture underneath
+- new Word-like `Simple markup` UI on top
+
+Do not drift into building a second competing review model unless you can justify it with concrete evidence.
+
 ## Branch And Starting Point
 
 Work from the current branch:
@@ -310,6 +328,7 @@ Run broader tests if your change touches server persistence or routing.
 ## Existing UX Decisions To Preserve Unless You Have A Better Verified Replacement
 
 - Keep `Simple markup` as the main mode.
+- Keep the original suggestion engine as the primary backend path wherever possible, and bend the UI around it rather than replacing it.
 - Keep the right-side rail and side panel review flow.
 - Keep the integrated context-menu review actions.
 - Keep keyboard shortcuts centralized in config.
