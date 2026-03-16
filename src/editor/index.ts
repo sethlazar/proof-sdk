@@ -180,6 +180,9 @@ import { getTriggerService } from '../agent/trigger-service';
 import { extractEmbeddedProvenance } from '../formats/provenance-sidecar';
 import type { CommentSelector, Comment } from '../formats/provenance-sidecar';
 import { normalizeQuote, extractMarks, embedMarks, getThread, migrateProvenanceToMarks, type OrchestratedMarkMeta } from '../formats/marks';
+import {
+  stripAllProofSpanTagsWithReplacements,
+} from '../../server/proof-span-strip';
 import { proofMarkHandler } from '../formats/remark-proof-marks';
 import { remarkProofMarksPlugin } from './schema/remark-proof-marks-plugin';
 import { getCurrentActor, setCurrentActor as setCurrentActorValue, normalizeActor } from './actor';
@@ -650,6 +653,34 @@ function stripProofSpanTags(markdown: string): string {
 
   result += markdown.slice(lastIndex);
   return result;
+}
+
+function buildCollabProofSpanReplacementMap(marks: Record<string, StoredMark>): Record<string, string> {
+  const replacements: Record<string, string> = {};
+
+  for (const [id, mark] of Object.entries(marks)) {
+    if (!mark || typeof mark !== 'object') continue;
+    const kind = mark.kind;
+    if (kind === 'insert' || kind === 'replace') {
+      if (typeof mark.content === 'string') {
+        replacements[id] = mark.content;
+        continue;
+      }
+      if (typeof mark.quote === 'string') {
+        replacements[id] = mark.quote;
+        continue;
+      }
+    }
+    if (kind === 'delete') {
+      replacements[id] = '';
+      continue;
+    }
+    if (typeof mark.quote === 'string') {
+      replacements[id] = mark.quote;
+    }
+  }
+
+  return replacements;
 }
 
 function normalizeMarkdownForComparison(markdown: string): string {
@@ -2140,7 +2171,10 @@ class ProofEditorImpl implements ProofEditor {
       try {
         const view = ctx.get(editorViewCtx);
         const serializer = ctx.get(serializerCtx);
-        markdown = this.normalizeMarkdownForCollab(serializer(view.state.doc));
+        markdown = this.normalizeMarkdownForCollab(
+          serializer(view.state.doc),
+          getMarkMetadataWithQuotes(view.state),
+        );
       } catch (error) {
         const details = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
         console.warn('[share] failed to capture local collab template', details);
@@ -5114,7 +5148,9 @@ class ProofEditorImpl implements ProofEditor {
       this.pendingProjectionPublish = true;
       return;
     }
-    collabClient.setProjectionMarkdown(this.normalizeMarkdownForCollab(markdown));
+    collabClient.setProjectionMarkdown(
+      this.normalizeMarkdownForCollab(markdown, getMarkMetadataWithQuotes(view.state)),
+    );
     this.pendingProjectionPublish = false;
   }
 
@@ -5133,7 +5169,7 @@ class ProofEditorImpl implements ProofEditor {
     const editorText = this.normalizeCollabHydrationText(
       view.state.doc.textBetween(0, view.state.doc.content.size, '\n', '\n'),
     );
-    const nextMarkdown = this.normalizeMarkdownForCollab(markdown);
+    const nextMarkdown = this.normalizeMarkdownForCollab(markdown, getMarkMetadataWithQuotes(view.state));
 
     let fragment: unknown;
     let liveMarkdown = '';
@@ -5171,8 +5207,9 @@ class ProofEditorImpl implements ProofEditor {
       const markdown = this.normalizeMarkdownForRuntime(serializeMarkdown(view.state.doc));
       if (!markdown) return;
       this.lastMarkdown = markdown;
-      collabClient.syncEditorState(view.state.doc, this.normalizeMarkdownForCollab(markdown));
-      collabClient.setMarksMetadata(getMarkMetadataWithQuotes(view.state));
+      const metadata = getMarkMetadataWithQuotes(view.state);
+      collabClient.syncEditorState(view.state.doc, this.normalizeMarkdownForCollab(markdown, metadata));
+      collabClient.setMarksMetadata(metadata);
       this.pendingProjectionPublish = false;
     } catch (error) {
       console.warn('[share] failed to sync review result into collab state', error);
@@ -5187,7 +5224,9 @@ class ProofEditorImpl implements ProofEditor {
       const markdown = this.normalizeMarkdownForRuntime(serializer(view.state.doc));
       if (!markdown) return;
       this.lastMarkdown = markdown;
-      collabClient.setProjectionMarkdown(this.normalizeMarkdownForCollab(markdown));
+      collabClient.setProjectionMarkdown(
+        this.normalizeMarkdownForCollab(markdown, getMarkMetadataWithQuotes(view.state)),
+      );
       this.pendingProjectionPublish = false;
     });
   }
@@ -5707,8 +5746,13 @@ class ProofEditorImpl implements ProofEditor {
         }
 
         if (suggestionsEnabled && tr.docChanged) {
+          const clearPendingDomSuggestionSelection = () => {
+            this.pendingDomSuggestionSelection = null;
+          };
+
           // Don't intercept meta transactions (like enabling/disabling suggestions)
           if (tr.getMeta(suggestionsPluginKey) !== undefined) {
+            clearPendingDomSuggestionSelection();
             dispatchWithRevision(tr, undoSnapshotIntent);
             return;
           }
@@ -5716,33 +5760,37 @@ class ProofEditorImpl implements ProofEditor {
           // Don't intercept marks operations (accept/reject suggestions)
           // These are internal operations that should not be converted to suggestions
           if (tr.getMeta(marksPluginKey) !== undefined) {
+            clearPendingDomSuggestionSelection();
             dispatchWithRevision(tr, undoSnapshotIntent);
             return;
           }
 
           // Don't intercept document load transactions
           if (tr.getMeta('document-load') !== undefined) {
+            clearPendingDomSuggestionSelection();
             dispatchWithRevision(tr, undoSnapshotIntent);
             return;
           }
 
           // Don't intercept Yjs-origin collaborative transactions.
           if (this.isYjsChangeOriginTransaction(tr)) {
+            clearPendingDomSuggestionSelection();
             originalDispatch(tr);
             return;
           }
 
           // Don't intercept undo/redo transactions (from history plugin)
           if (tr.getMeta('history$') !== undefined || tr.getMeta('addToHistory') === false) {
+            clearPendingDomSuggestionSelection();
             dispatchWithRevision(tr, undoSnapshotIntent);
             return;
           }
 
           const domSelectionRange = this.pendingDomSuggestionSelection ?? this.getDomSelectionRange(view);
+          clearPendingDomSuggestionSelection();
           if (domSelectionRange && domSelectionRange.from < domSelectionRange.to) {
             tr.setMeta('proof-dom-selection-range', domSelectionRange);
           }
-          this.pendingDomSuggestionSelection = null;
 
           // Wrap the transaction to convert edits to suggestions
           const wrappedTr = wrapTransactionForSuggestions(tr, view.state, true);
@@ -5984,6 +6032,10 @@ class ProofEditorImpl implements ProofEditor {
     this.initialMarksSynced = true;
 
     if (this.isShareMode) {
+      if (this.collabEnabled && this.collabCanEdit && this.editor) {
+        const serializer = this.editor.ctx.get(serializerCtx);
+        this.syncShareCollabStateFromView(view, serializer);
+      }
       this.scheduleShareMarksFlush();
     } else if (this.collabEnabled && this.collabCanEdit) {
       collabClient.setMarksMetadata(metadata);
@@ -6014,10 +6066,17 @@ class ProofEditorImpl implements ProofEditor {
     return markdown;
   }
 
-  private normalizeMarkdownForCollab(markdown: string): string {
+  private normalizeMarkdownForCollab(markdown: string, marks?: Record<string, StoredMark>): string {
     // Collab transport stays span-free to prevent span reparse drift/duplication.
     // Marks are carried separately in metadata.
-    return stripProofSpanTags(this.normalizeMarkdownForRuntime(markdown));
+    const runtimeMarkdown = this.normalizeMarkdownForRuntime(markdown);
+    if (marks && Object.keys(marks).length > 0) {
+      return stripAllProofSpanTagsWithReplacements(
+        runtimeMarkdown,
+        buildCollabProofSpanReplacementMap(marks),
+      );
+    }
+    return stripProofSpanTags(runtimeMarkdown);
   }
 
   private sendDocumentSnapshot(
@@ -9322,6 +9381,52 @@ class ProofEditorImpl implements ProofEditor {
     return null;
   }
 
+  private isShareRetryableSyncError(
+    result: ShareMarkMutationResponse | ShareRequestError | null,
+  ): result is ShareRequestError {
+    return Boolean(
+      result
+      && 'error' in result
+      && result.error.status === 409
+      && (result.error.code === 'FRAGMENT_DIVERGENCE' || result.error.code === 'STALE_BASE'),
+    );
+  }
+
+  private async retryShareSuggestionMutationAfterSync(
+    markId: string,
+    actor: string,
+    action: 'accept' | 'reject',
+    initialResult: ShareMarkMutationResponse | ShareRequestError | null,
+  ): Promise<ShareMarkMutationResponse | ShareRequestError | null> {
+    if (!this.isShareRetryableSyncError(initialResult)) return initialResult;
+    if (!this.editor || !this.isShareMode || !this.collabEnabled || !this.collabCanEdit) {
+      return initialResult;
+    }
+
+    let currentResult: ShareMarkMutationResponse | ShareRequestError | null = initialResult;
+    const maxAttempts = 2;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      this.editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        const serializer = ctx.get(serializerCtx);
+        this.syncShareCollabStateFromView(view, serializer);
+      });
+
+      await new Promise((resolve) => window.setTimeout(resolve, 120 * (attempt + 1)));
+
+      currentResult = action === 'accept'
+        ? await shareClient.acceptSuggestion(markId, actor)
+        : await shareClient.rejectSuggestion(markId, actor);
+
+      if (!this.isShareRetryableSyncError(currentResult)) {
+        return currentResult;
+      }
+    }
+
+    return currentResult;
+  }
+
   private sanitizeFinalizedSuggestionServerMarks(
     markId: string,
     serverMarks: Record<string, StoredMark> | null,
@@ -9345,6 +9450,7 @@ class ProofEditorImpl implements ProofEditor {
     let metadata: Record<string, unknown> | null = null;
     let expectedQuotes: Record<string, string> = {};
     let projectionMarkdown: string | null = null;
+    let collabProjectionMarkdown: string | null = null;
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       const localMetadata = getMarkMetadataWithQuotes(view.state);
@@ -9371,6 +9477,9 @@ class ProofEditorImpl implements ProofEditor {
         const serializer = ctx.get(serializerCtx);
         const serialized = this.normalizeMarkdownForRuntime(serializer(view.state.doc));
         projectionMarkdown = extractMarks(serialized).content;
+        collabProjectionMarkdown = projectionMarkdown
+          ? this.normalizeMarkdownForCollab(projectionMarkdown, localMetadata)
+          : null;
       }
     });
 
@@ -9378,8 +9487,19 @@ class ProofEditorImpl implements ProofEditor {
     const markIds = Object.keys(metadata);
     if (markIds.length === 0) return false;
 
+    const collabProjectionCanSatisfyExpectedQuotes = !collabProjectionMarkdown
+      || markIds.every((markId) => {
+        const expected = expectedQuotes[markId];
+        return !expected || collabProjectionMarkdown?.includes(expected);
+      });
+
     let synced = false;
-    if (this.collabEnabled && this.collabCanEdit && this.editor) {
+    if (
+      this.collabEnabled
+      && this.collabCanEdit
+      && this.editor
+      && collabProjectionCanSatisfyExpectedQuotes
+    ) {
       this.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
         if (projectionMarkdown) {
@@ -9480,10 +9600,18 @@ class ProofEditorImpl implements ProofEditor {
     const actor = getCurrentActor();
     const result = await shareClient.acceptSuggestion(markId, actor);
     const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);
-    const effectiveResult = backfillPlan
-      && await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)
+    const retriedResult = await this.retryShareSuggestionMutationAfterSync(markId, actor, 'accept', result);
+    const effectiveBackfillPlan = this.getShareSuggestionBackfillPlan(markId, retriedResult) ?? backfillPlan;
+    const followupResult = effectiveBackfillPlan
+      && await this.backfillMissingShareSuggestionMetadata(effectiveBackfillPlan, actor)
       ? await shareClient.acceptSuggestion(markId, actor)
-      : result;
+      : retriedResult;
+    const effectiveResult = await this.retryShareSuggestionMutationAfterSync(
+      markId,
+      actor,
+      'accept',
+      followupResult,
+    );
     if (!effectiveResult || 'error' in effectiveResult || effectiveResult.success !== true) {
       console.error('[markAcceptPersisted] Failed to persist suggestion acceptance via share mutation:', effectiveResult);
       return false;
@@ -9548,10 +9676,18 @@ class ProofEditorImpl implements ProofEditor {
     const actor = getCurrentActor();
     const result = await shareClient.rejectSuggestion(markId, actor);
     const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);
-    const effectiveResult = backfillPlan
-      && await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)
+    const retriedResult = await this.retryShareSuggestionMutationAfterSync(markId, actor, 'reject', result);
+    const effectiveBackfillPlan = this.getShareSuggestionBackfillPlan(markId, retriedResult) ?? backfillPlan;
+    const followupResult = effectiveBackfillPlan
+      && await this.backfillMissingShareSuggestionMetadata(effectiveBackfillPlan, actor)
       ? await shareClient.rejectSuggestion(markId, actor)
-      : result;
+      : retriedResult;
+    const effectiveResult = await this.retryShareSuggestionMutationAfterSync(
+      markId,
+      actor,
+      'reject',
+      followupResult,
+    );
     if (!effectiveResult || 'error' in effectiveResult || effectiveResult.success !== true) {
       console.error('[markRejectPersisted] Failed to persist suggestion rejection via share mutation:', effectiveResult);
       return false;

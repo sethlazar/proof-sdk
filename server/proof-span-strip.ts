@@ -4,6 +4,7 @@ const anyProofAttrRegex = /data-proof\s*=\s*(?:"[^"]+"|'[^']+'|[^\s>]+)/i;
 type ProofReplacementMark = {
   kind?: unknown;
   quote?: unknown;
+  content?: unknown;
 };
 
 type AuthoredSpanBounds = {
@@ -139,7 +140,13 @@ function isGapFullyCovered(
   return false;
 }
 
+function isWhitespaceOnlyGap(stripped: string, start: number, end: number): boolean {
+  if (end <= start) return true;
+  return stripped.slice(start, end).trim().length === 0;
+}
+
 function buildReplacementGroups(
+  stripped: string,
   proofRanges: ProofRange[],
   replacementsById: Record<string, string>,
 ): Array<{ start: number; end: number; replacement: string }> {
@@ -169,7 +176,11 @@ function buildReplacementGroups(
 
     for (let index = 1; index < sorted.length; index += 1) {
       const next = sorted[index];
-      if (next.start <= currentEnd || isGapFullyCovered(coverage, currentEnd, next.start)) {
+      if (
+        next.start <= currentEnd
+        || isGapFullyCovered(coverage, currentEnd, next.start)
+        || isWhitespaceOnlyGap(stripped, currentEnd, next.start)
+      ) {
         currentEnd = Math.max(currentEnd, next.end);
         continue;
       }
@@ -221,7 +232,7 @@ function stripProofSpanTagsInternal(
 ): string {
   if (replacementsById) {
     const { stripped, proofRanges } = collectStrippedProofData(markdown, shouldStrip);
-    return applyReplacementGroups(stripped, buildReplacementGroups(proofRanges, replacementsById));
+    return applyReplacementGroups(stripped, buildReplacementGroups(stripped, proofRanges, replacementsById));
   }
 
   const spanTagRegex = /<\/?span\b[^>]*>/gi;
@@ -316,6 +327,40 @@ export function buildProofSpanReplacementMap<T extends ProofReplacementMark>(
       || mark.kind === 'replace'
       || mark.kind === 'approved'
       || mark.kind === 'flagged'
+    ) {
+      replacements[id] = mark.quote;
+    }
+  }
+  return replacements;
+}
+
+export function buildProofSpanProjectionReplacementMap<T extends ProofReplacementMark>(
+  marks: Record<string, T>,
+): Record<string, string> {
+  const replacements: Record<string, string> = {};
+  for (const [id, mark] of Object.entries(marks)) {
+    if (mark.kind === 'insert' || mark.kind === 'replace') {
+      if (typeof mark.content === 'string') {
+        replacements[id] = mark.content;
+        continue;
+      }
+      if (typeof mark.quote === 'string' && mark.quote.trim().length > 0) {
+        replacements[id] = mark.quote;
+      }
+      continue;
+    }
+    if (mark.kind === 'delete') {
+      replacements[id] = '';
+      continue;
+    }
+    if (
+      typeof mark?.quote === 'string'
+      && mark.quote.trim().length > 0
+      && (
+        mark.kind === 'comment'
+        || mark.kind === 'approved'
+        || mark.kind === 'flagged'
+      )
     ) {
       replacements[id] = mark.quote;
     }

@@ -2,6 +2,8 @@ import { EditorState, Plugin } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { canonicalizeStoredMarks, normalizeQuote, type StoredMark } from '../src/formats/marks.js';
 import {
+  __resetMarkAnchorHydrationFailures,
+  __resetResolvedMarkTombstones,
   applyRemoteMarks,
   accept as acceptMark,
   getMarkMetadataWithQuotes,
@@ -278,6 +280,10 @@ function preserveCanonicalMarks(
   return canonicalizeStoredMarks(nextMarks);
 }
 
+function decodeProjectionSpaceEntities(markdown: string): string {
+  return markdown.replace(/&#x20;|&#32;/gi, ' ');
+}
+
 async function buildRehydratedState(markdown: string, marks: Record<string, StoredMark>): Promise<{
   strippedMarkdown: string;
   state: EditorState;
@@ -287,14 +293,22 @@ async function buildRehydratedState(markdown: string, marks: Record<string, Stor
   hydratedIds: string[];
   missingRequiredIds: string[];
 } | ProofMarkRehydrationFailure> {
+  // The browser keeps a short-lived global cache of anchor hydration failures to avoid
+  // thrashing on repeated UI passes. Server rehydration runs are one-shot and must not
+  // inherit those failures across requests or across fallback retries.
+  __resetMarkAnchorHydrationFailures();
+  // Likewise, resolved-mark tombstones are a live-editor UI concern. If headless server
+  // rehydration inherits them, a previously accepted mark ID can become impossible to
+  // rehydrate on a later retry within the same process.
+  __resetResolvedMarkTombstones();
   const serializedAuthoredMarks = await extractAuthoredMarksFromMarkdown(markdown ?? '');
   const effectiveMarks = serializedAuthoredMarks
     ? synchronizeAuthoredMarks(marks, serializedAuthoredMarks, { preserveExistingAnchors: true })
     : marks;
-  const strippedMarkdown = stripAllProofSpanTagsWithReplacements(
+  const strippedMarkdown = decodeProjectionSpaceEntities(stripAllProofSpanTagsWithReplacements(
     markdown ?? '',
     buildProofSpanReplacementMap(effectiveMarks),
-  );
+  ));
   const parser = await getHeadlessMilkdownParser();
   const parsed = parseMarkdownWithHtmlFallback(parser, strippedMarkdown);
   if (!parsed.doc) {

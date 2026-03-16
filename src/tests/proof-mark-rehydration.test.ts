@@ -56,7 +56,7 @@ async function run(): Promise<void> {
 
   const db = await import('../../server/db.ts');
   const { executeDocumentOperationAsync } = await import('../../server/document-engine.ts');
-  const { rehydrateProofMarksMarkdown } = await import('../../server/proof-mark-rehydration.ts');
+  const { rehydrateProofMarksMarkdown, finalizeSuggestionThroughRehydration } = await import('../../server/proof-mark-rehydration.ts');
   const { repairProofMarksForSlug } = await import('../../server/proof-mark-repair.ts');
 
   try {
@@ -128,6 +128,77 @@ async function run(): Promise<void> {
     const rejectedVisibleText = stripAllProofSpanTags(rejectedDoc?.markdown ?? '');
     assert(rejectedVisibleText.includes(fullQuote), 'Expected reject to restore the full original quote text');
     assert(!rejectedDoc?.markdown.includes('data-proof="suggestion"'), 'Expected rejected suggestion wrapper to be removed');
+
+    const entityInsertMarkId = 'entity-insert-accept';
+    const entityInsertResult = await finalizeSuggestionThroughRehydration({
+      markdown: 'Alpha beta gamma. delta&#x20;',
+      marks: canonicalizeStoredMarks({
+        [entityInsertMarkId]: {
+          kind: 'insert',
+          by: 'human:test',
+          createdAt,
+          quote: 'delta',
+          content: ' delta',
+          status: 'pending',
+          startRel: 'char:17',
+          endRel: 'char:23',
+          range: { from: 18, to: 24 },
+        } satisfies StoredMark,
+      }),
+      markId: entityInsertMarkId,
+      action: 'accept',
+    });
+    assert(
+      'ok' in entityInsertResult && entityInsertResult.ok === true,
+      `Expected rehydration accept to decode projection-space entities, got ${JSON.stringify(entityInsertResult)}`,
+    );
+    assertEqual(
+      stripProofSpanTags(entityInsertResult.markdown).trim(),
+      'Alpha beta gamma. delta',
+      'Expected projection-space entity decoding to preserve the accepted insertion text',
+    );
+
+    const repeatedInsertMarks = canonicalizeStoredMarks({
+      [entityInsertMarkId]: {
+        kind: 'insert',
+        by: 'human:test',
+        createdAt,
+        quote: 'delta',
+        content: ' delta',
+        status: 'pending',
+        startRel: 'char:17',
+        endRel: 'char:23',
+        range: { from: 18, to: 24 },
+      } satisfies StoredMark,
+    });
+    const repeatedFirstAccept = await finalizeSuggestionThroughRehydration({
+      markdown: 'Alpha beta gamma. delta&#x20;',
+      marks: repeatedInsertMarks,
+      markId: entityInsertMarkId,
+      action: 'accept',
+    });
+    assert(
+      repeatedFirstAccept.ok,
+      `Expected first repeated rehydration accept to succeed, got ${JSON.stringify(repeatedFirstAccept)}`,
+    );
+    const repeatedSecondAccept = await finalizeSuggestionThroughRehydration({
+      markdown: 'Alpha beta gamma. delta&#x20;',
+      marks: repeatedInsertMarks,
+      markId: entityInsertMarkId,
+      action: 'accept',
+    });
+    assert(
+      repeatedSecondAccept.ok,
+      `Expected second repeated rehydration accept to succeed after tombstone reset, got ${JSON.stringify(repeatedSecondAccept)}`,
+    );
+    const repeatedRepair = await rehydrateProofMarksMarkdown(
+      'Alpha beta gamma. delta&#x20;',
+      repeatedInsertMarks,
+    );
+    assert(
+      repeatedRepair.ok,
+      `Expected rehydrate-only pass to remain stable after repeated accepts, got ${JSON.stringify(repeatedRepair)}`,
+    );
 
     const longSlug = `rehydrate-add-accepted-${Math.random().toString(36).slice(2, 10)}`;
     const longQuote = `Start ${'a'.repeat(140)} end`;

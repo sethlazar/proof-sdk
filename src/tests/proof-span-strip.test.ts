@@ -1,4 +1,6 @@
 import {
+  buildProofSpanReplacementMap,
+  buildProofSpanProjectionReplacementMap,
   buildStrippedIndexMap,
   stripAllProofSpanTags,
   stripAllProofSpanTagsWithReplacements,
@@ -82,6 +84,64 @@ function run(): void {
     splitBase,
     'Before Alpha Beta Gamma Delta Epsilon Zeta Eta After',
     'Expected replacement-aware stripping to rebuild split suggestion spans once per logical mark',
+  );
+
+  const whitespaceSplitSuggestionMarkdown = [
+    'Before ',
+    '<span data-proof="suggestion" data-id="s3" data-by="human:test" data-kind="insert">line</span>',
+    ' ',
+    '<span data-proof="suggestion" data-id="s3" data-by="human:test" data-kind="insert">one</span>',
+    ' After',
+  ].join('');
+  const whitespaceSplitBase = stripAllProofSpanTagsWithReplacements(whitespaceSplitSuggestionMarkdown, {
+    s3: 'line one',
+  });
+  assertEqual(
+    whitespaceSplitBase,
+    'Before line one After',
+    'Expected replacement-aware stripping to merge same-id suggestion spans across whitespace-only gaps',
+  );
+
+  const anchorReplacements = buildProofSpanReplacementMap({
+    insert1: { kind: 'insert', quote: 'delta', content: ' delta' },
+    delete1: { kind: 'delete', quote: 'beta' },
+  });
+  assertEqual(
+    anchorReplacements.insert1,
+    'delta',
+    'Expected anchor-preserving replacements to keep using the normalized quote text for pending insert hydration',
+  );
+  assertEqual(
+    anchorReplacements.delete1,
+    'beta',
+    'Expected anchor-preserving replacements to keep using the deleted quote for pending delete hydration',
+  );
+
+  const projectionReplacements = buildProofSpanProjectionReplacementMap({
+    insert1: { kind: 'insert', quote: 'delta', content: ' delta' },
+    replace1: { kind: 'replace', quote: 'delta', content: ' delta' },
+    delete1: { kind: 'delete', quote: 'beta' },
+    comment1: { kind: 'comment', quote: 'gamma' },
+  });
+  assertEqual(
+    projectionReplacements.insert1,
+    ' delta',
+    'Expected insert projection replacements to preserve exact inserted content, including leading whitespace',
+  );
+  assertEqual(
+    projectionReplacements.replace1,
+    ' delta',
+    'Expected replace projection replacements to preserve exact replacement content, including leading whitespace',
+  );
+  assertEqual(
+    projectionReplacements.delete1,
+    '',
+    'Expected delete projection replacements to disappear from the semantic live-text projection',
+  );
+  assertEqual(
+    projectionReplacements.comment1,
+    'gamma',
+    'Expected non-suggestion proof spans to continue projecting their quote text',
   );
 
   console.log('✓ proof span stripping preserves non-authored marks');

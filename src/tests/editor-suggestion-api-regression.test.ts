@@ -256,9 +256,11 @@ function run(): void {
   assert(
     editorSource.includes('private pendingDomSuggestionSelection: MarkRange | null = null;')
       && editorSource.includes("const domSelectionRange = this.pendingDomSuggestionSelection ?? this.getDomSelectionRange(view);")
+      && editorSource.includes('const clearPendingDomSuggestionSelection = () => {')
+      && editorSource.includes('clearPendingDomSuggestionSelection();')
       && editorSource.includes("tr.setMeta('proof-dom-selection-range', domSelectionRange);")
       && editorSource.includes('this.pendingDomSuggestionSelection = null;'),
-    'Expected tracked native overwrites to preserve the pre-input DOM selection long enough for suggestion wrapping',
+    'Expected tracked native overwrites to preserve the pre-input DOM selection long enough for suggestion wrapping while clearing stale DOM ranges before review, load, remote, and undo transactions can leak them into later edits',
   );
   assert(
     editorSource.includes("if (source === 'review-backfill') return true;")
@@ -267,9 +269,20 @@ function run(): void {
   );
   assert(
     editorSource.includes('private syncShareCollabStateFromView(')
-      && editorSource.includes('collabClient.syncEditorState(view.state.doc, this.normalizeMarkdownForCollab(markdown));')
-      && editorSource.includes('collabClient.setMarksMetadata(getMarkMetadataWithQuotes(view.state));'),
-    'Expected share review actions to force-sync the live editor state back into collab when markup changes without changing plain markdown',
+      && editorSource.includes('const metadata = getMarkMetadataWithQuotes(view.state);')
+      && editorSource.includes('collabClient.syncEditorState(view.state.doc, this.normalizeMarkdownForCollab(markdown, metadata));')
+      && editorSource.includes('collabClient.setMarksMetadata(metadata);'),
+    'Expected share review actions to force-sync the live editor state back into collab using the same semantic suggestion metadata that drives the visible text',
+  );
+  assert(
+    editorSource.includes('private normalizeMarkdownForCollab(markdown: string, marks?: Record<string, StoredMark>): string {')
+      && editorSource.includes('stripAllProofSpanTagsWithReplacements(')
+      && editorSource.includes('function buildCollabProofSpanReplacementMap(marks: Record<string, StoredMark>): Record<string, string> {')
+      && editorSource.includes("if (kind === 'insert' || kind === 'replace') {")
+      && editorSource.includes("if (kind === 'delete') {")
+      && editorSource.includes('buildCollabProofSpanReplacementMap(marks),')
+      && editorSource.includes('return stripProofSpanTags(runtimeMarkdown);'),
+    'Expected collab markdown normalization to rebuild semantic live text from exact suggestion content when live suggestion metadata is available',
   );
   assert(
     editorSource.includes('private notifyAuthorshipStatsUpdated(stats: ReturnType<typeof getAuthorshipStats>): void {')
@@ -280,10 +293,13 @@ function run(): void {
   const handleMarksChangeBlock = sliceBetween(editorSource, '  private handleMarksChange(', '\n  private serializeMarkdown(');
   assert(
     handleMarksChangeBlock.includes('if (this.isShareMode) {')
+      && handleMarksChangeBlock.includes('if (this.collabEnabled && this.collabCanEdit && this.editor) {')
+      && handleMarksChangeBlock.includes('const serializer = this.editor.ctx.get(serializerCtx);')
+      && handleMarksChangeBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
       && handleMarksChangeBlock.includes('this.scheduleShareMarksFlush();')
       && handleMarksChangeBlock.includes('} else if (this.collabEnabled && this.collabCanEdit) {')
       && handleMarksChangeBlock.includes('collabClient.setMarksMetadata(metadata);'),
-    'Expected share mode mark updates to be deferred instead of writing collab metadata immediately',
+    'Expected share mode mark updates to sync the live editor projection back into collab immediately while still deferring the share mark flush',
   );
 
   const rejectSuggestionBlock = sliceBetween(editorSource, '  rejectSuggestion(id: string): boolean {', '\n  /**');
@@ -313,12 +329,16 @@ function run(): void {
     markAcceptPersistedBlock.includes('const result = await shareClient.acceptSuggestion(markId, actor);')
       && markAcceptPersistedBlock.includes('this.flushShareMarks({ keepalive: true });')
       && markAcceptPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
-      && markAcceptPersistedBlock.includes('await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)')
+      && markAcceptPersistedBlock.includes("const retriedResult = await this.retryShareSuggestionMutationAfterSync(markId, actor, 'accept', result);")
+      && markAcceptPersistedBlock.includes('const effectiveBackfillPlan = this.getShareSuggestionBackfillPlan(markId, retriedResult) ?? backfillPlan;')
+      && markAcceptPersistedBlock.includes('await this.backfillMissingShareSuggestionMetadata(effectiveBackfillPlan, actor)')
+      && markAcceptPersistedBlock.includes('const followupResult = effectiveBackfillPlan')
+      && markAcceptPersistedBlock.includes("const effectiveResult = await this.retryShareSuggestionMutationAfterSync(")
       && markAcceptPersistedBlock.includes('const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(')
       && markAcceptPersistedBlock.includes('success = acceptMark(view, markId, parser);')
       && markAcceptPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
       && markAcceptPersistedBlock.includes('pruneMissingSuggestions: true'),
-    'Expected markAcceptPersisted to flush fresh share marks, retry after hydrating missing share suggestion metadata, sanitize stale resolved suggestions, and then prune resolved suggestions from the local share-mode UI',
+    'Expected markAcceptPersisted to retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, sanitize stale resolved suggestions, and then prune resolved suggestions from the local share-mode UI',
   );
 
   const markRejectPersistedBlock = sliceBetween(editorSource, '  async markRejectPersisted(markId: string): Promise<boolean> {', '\n  /**\n   * Accept all pending suggestions\n   */');
@@ -326,12 +346,16 @@ function run(): void {
     markRejectPersistedBlock.includes('const result = await shareClient.rejectSuggestion(markId, actor);')
       && markRejectPersistedBlock.includes('this.flushShareMarks({ keepalive: true });')
       && markRejectPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
-      && markRejectPersistedBlock.includes('await this.backfillMissingShareSuggestionMetadata(backfillPlan, actor)')
+      && markRejectPersistedBlock.includes("const retriedResult = await this.retryShareSuggestionMutationAfterSync(markId, actor, 'reject', result);")
+      && markRejectPersistedBlock.includes('const effectiveBackfillPlan = this.getShareSuggestionBackfillPlan(markId, retriedResult) ?? backfillPlan;')
+      && markRejectPersistedBlock.includes('await this.backfillMissingShareSuggestionMetadata(effectiveBackfillPlan, actor)')
+      && markRejectPersistedBlock.includes('const followupResult = effectiveBackfillPlan')
+      && markRejectPersistedBlock.includes("const effectiveResult = await this.retryShareSuggestionMutationAfterSync(")
       && markRejectPersistedBlock.includes('const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(')
       && markRejectPersistedBlock.includes('success = rejectMark(view, markId);')
       && markRejectPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
       && markRejectPersistedBlock.includes('pruneMissingSuggestions: true'),
-    'Expected markRejectPersisted to flush fresh share marks, retry after hydrating missing share suggestion metadata, sanitize stale resolved suggestions, and then prune resolved suggestions from the local share-mode UI',
+    'Expected markRejectPersisted to retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, sanitize stale resolved suggestions, and then prune resolved suggestions from the local share-mode UI',
   );
   const updateShareEditGateBlock = sliceBetween(editorSource, '  private updateShareEditGate(): void {', '\n  private ensureShareWebSocketConnection(): void {');
   assert(
@@ -363,6 +387,9 @@ function run(): void {
       && editorSource.includes('expectedQuotes = Object.fromEntries(')
       && editorSource.includes('const serialized = this.normalizeMarkdownForRuntime(serializer(view.state.doc));')
       && editorSource.includes('projectionMarkdown = extractMarks(serialized).content;')
+      && editorSource.includes('collabProjectionMarkdown = projectionMarkdown')
+      && editorSource.includes('const collabProjectionCanSatisfyExpectedQuotes = !collabProjectionMarkdown')
+      && editorSource.includes('&& collabProjectionCanSatisfyExpectedQuotes')
       && editorSource.includes("this.publishProjectionMarkdown(view, projectionMarkdown, 'review-backfill');")
       && editorSource.includes('collabClient.setMarksMetadata(metadata as Record<string, StoredMark>);')
       && editorSource.includes('synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);')
@@ -370,7 +397,7 @@ function run(): void {
       && editorSource.includes('private async waitForShareSuggestionMetadata(')
       && editorSource.includes('expectedQuotes: Record<string, string> = {}')
       && editorSource.includes('return !expected || content.includes(expected);'),
-    'Expected share suggestion persistence to backfill the server-reported missing pending suggestions, persist the live markdown plus marks when collab drift exists, and wait for the live quote to exist server-side before retrying',
+    'Expected share suggestion persistence to skip dead-end collab quote waits when the semantic projection intentionally hides the missing quote, then persist the live markdown plus marks and wait for the live quote to exist server-side before retrying',
   );
 
   const navigateNextSuggestionBlock = sliceBetween(editorSource, '  navigateToNextSuggestion(): string | null {', '\n  /**\n   * Navigate to the previous pending suggestion\n   */');
@@ -417,13 +444,14 @@ function run(): void {
     acceptRouteBlock.includes('const collabStatus = await notifyCollabMutation(')
       && acceptRouteBlock.includes('verify: true')
       && acceptRouteBlock.includes("source: 'marks.accept'")
+      && acceptRouteBlock.includes('stabilityMs: SUGGESTION_COLLAB_STABILITY_MS')
       && acceptRouteBlock.includes("const canTreatCommittedAcceptAsVerified = !collabStatus.confirmed")
       && acceptRouteBlock.includes("collabStatus.reason === 'markdown_mismatch'")
       && acceptRouteBlock.includes('collabStatus.fragmentConfirmed === true')
       && acceptRouteBlock.includes('collabStatus.canonicalConfirmed !== false')
       && acceptRouteBlock.includes('if (canTreatCommittedAcceptAsVerified) {')
       && acceptRouteBlock.includes("code: 'COLLAB_SYNC_FAILED'"),
-    'Expected /marks/accept to tolerate committed insertion accepts when only markdown verification is lagging',
+    'Expected /marks/accept to use the shorter suggestion-specific collab stability window while still tolerating committed insertion accepts when only markdown verification is lagging',
   );
   assert(
     editorSource.includes('private hasRecentLocalCollabEditingActivity(now = Date.now()): boolean {')

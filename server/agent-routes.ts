@@ -109,6 +109,10 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 const REWRITE_COLLAB_TIMEOUT_MS = parsePositiveInt(process.env.PROOF_REWRITE_COLLAB_TIMEOUT_MS, 3000);
 const REWRITE_BARRIER_TIMEOUT_MS = parsePositiveInt(process.env.PROOF_REWRITE_BARRIER_TIMEOUT_MS, 5000);
 const EDIT_COLLAB_STABILITY_MS = parsePositiveInt(process.env.AGENT_EDIT_COLLAB_STABILITY_MS, 2500);
+const SUGGESTION_COLLAB_STABILITY_MS = parsePositiveInt(
+  process.env.PROOF_SUGGESTION_COLLAB_STABILITY_MS,
+  Math.min(EDIT_COLLAB_STABILITY_MS, 400),
+);
 const EDIT_COLLAB_STABILITY_SAMPLE_MS = parsePositiveInt(process.env.AGENT_EDIT_COLLAB_STABILITY_SAMPLE_MS, 100);
 const EDIT_ACTIVE_COLLAB_SETTLE_MS = parsePositiveInt(process.env.AGENT_EDIT_ACTIVE_COLLAB_SETTLE_MS, 300);
 const EDIT_ACTIVE_COLLAB_SETTLE_SAMPLE_MS = parsePositiveInt(process.env.AGENT_EDIT_ACTIVE_COLLAB_SETTLE_SAMPLE_MS, 50);
@@ -2151,7 +2155,7 @@ agentRoutes.post('/:slug/marks/accept', async (req: Request, res: Response) => {
       {
         verify: true,
         source: 'marks.accept',
-        stabilityMs: EDIT_COLLAB_STABILITY_MS,
+        stabilityMs: SUGGESTION_COLLAB_STABILITY_MS,
         strictLiveDoc: true,
       },
     );

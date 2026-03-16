@@ -20,6 +20,7 @@ async function run(): Promise<void> {
 
   const db = await import('../../server/db.ts');
   const collab = await import('../../server/collab.ts');
+  const canonical = await import('../../server/canonical-document.ts');
   const { getHeadlessMilkdownParser, parseMarkdownWithHtmlFallback } = await import('../../server/milkdown-headless.ts');
 
   const slug = `proof-span-projection-${Math.random().toString(36).slice(2, 10)}`;
@@ -92,6 +93,12 @@ async function run(): Promise<void> {
     assert(
       (derivedMarkdown ?? '').trim() === canonicalMarkdown,
       `Expected fragment-derived markdown to strip proof spans back to semantic text. markdown=${String(derivedMarkdown)}`,
+    );
+
+    const canonicalProjection = await canonical.deriveProjectionFromCanonicalDoc(loadedDoc!);
+    assert(
+      canonicalProjection.markdown.trim() === canonicalMarkdown,
+      `Expected canonical live projection to strip proof spans back to semantic text. markdown=${String(canonicalProjection.markdown)}`,
     );
 
     const safety = collab.evaluateProjectionSafety(canonicalMarkdown, canonicalMarkdown, loadedDoc!);

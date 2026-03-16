@@ -23,6 +23,7 @@ import { mutateCanonicalDocument } from './canonical-document.js';
 import { canonicalizeStoredMarks, removeFinalizedSuggestionMetadata } from '../src/formats/marks.js';
 import {
   finalizeSuggestionThroughRehydration,
+  rehydrateProofMarksMarkdown,
   type ProofMarkRehydrationFailure,
 } from './proof-mark-rehydration.js';
 
@@ -1322,12 +1323,70 @@ async function updateSuggestionStatusAsync(
     return updateSuggestionStatus(slug, body, status);
   }
 
-  const structuredResult = await finalizeSuggestionThroughRehydration({
+  let structuredResult = await finalizeSuggestionThroughRehydration({
     markdown: doc.markdown,
     marks,
     markId,
     action: status === 'accepted' ? 'accept' : 'reject',
   });
+  let mutationBaseRevision = doc.revision;
+  if (
+    !structuredResult.ok
+    && structuredResult.code === 'MARK_NOT_HYDRATED'
+  ) {
+    console.warn('[document-engine] Structured suggestion mutation missed hydration; retrying canonical row', {
+      slug,
+      markId,
+      status,
+      initialReadSource: (doc as { read_source?: string }).read_source ?? null,
+      initialRevision: doc.revision,
+    });
+    const canonicalRow = getDocumentBySlug(slug);
+    if (canonicalRow && canonicalRow.revision !== null) {
+      const canonicalRowMarks = parseMarks(canonicalRow.marks);
+      const canonicalExisting = canonicalRowMarks[markId];
+      if (canonicalExisting) {
+        const retriedStructuredResult = await finalizeSuggestionThroughRehydration({
+          markdown: canonicalRow.markdown,
+          marks: canonicalRowMarks,
+          markId,
+          action: status === 'accepted' ? 'accept' : 'reject',
+        });
+        if (!retriedStructuredResult.ok) {
+          const rehydratedOnly = await rehydrateProofMarksMarkdown(canonicalRow.markdown, canonicalRowMarks);
+          console.warn('[document-engine] Canonical row rehydrate-only debug', {
+            slug,
+            markId,
+            status,
+            markdown: canonicalRow.markdown,
+            targetMark: canonicalRowMarks[markId],
+            rehydratedOk: rehydratedOnly.ok,
+            rehydratedCode: rehydratedOnly.ok ? null : rehydratedOnly.code,
+            rehydratedMissing: rehydratedOnly.ok ? [] : rehydratedOnly.missingRequiredMarkIds,
+          });
+        }
+        console.warn('[document-engine] Canonical row retry result', {
+          slug,
+          markId,
+          status,
+          canonicalRevision: canonicalRow.revision,
+          ok: retriedStructuredResult.ok,
+          code: retriedStructuredResult.ok ? null : retriedStructuredResult.code,
+        });
+        if (retriedStructuredResult.ok) {
+          console.warn('[document-engine] Retried suggestion mutation against canonical row after live fallback hydration miss', {
+            slug,
+            markId,
+            status,
+            readSource: (doc as { read_source?: string }).read_source ?? null,
+            canonicalRevision: canonicalRow.revision,
+          });
+          structuredResult = retriedStructuredResult;
+          mutationBaseRevision = canonicalRow.revision;
+        }
+      }
+    }
+  }
   if (!structuredResult.ok) {
     return toStructuredMutationFailureResult(structuredResult, 'Suggestion anchor quote not found in document');
   }
@@ -1337,7 +1396,7 @@ async function updateSuggestionStatusAsync(
     nextMarkdown: structuredResult.markdown,
     nextMarks: structuredResult.marks as unknown as Record<string, unknown>,
     source: `engine:${status}:${actor}`,
-    baseRevision: doc.revision,
+    baseRevision: mutationBaseRevision,
     strictLiveDoc: true,
     guardPathologicalGrowth: true,
   });

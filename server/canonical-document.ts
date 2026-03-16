@@ -26,6 +26,7 @@ import {
 } from './collab.js';
 import { getHeadlessMilkdownParser, parseMarkdownWithHtmlFallback, serializeMarkdown } from './milkdown-headless.js';
 import {
+  buildProofSpanProjectionReplacementMap,
   buildProofSpanReplacementMap,
   stripAllProofSpanTagsWithReplacements,
 } from './proof-span-strip.js';
@@ -285,6 +286,15 @@ async function computeFragmentTextHashFromMarkdown(markdown: string): Promise<st
   return hashText(normalizeFragmentPlainText(parsed.doc.textContent ?? ''));
 }
 
+function stateVectorsEqual(a: Uint8Array | null, b: Uint8Array | null): boolean {
+  if (!a || !b) return false;
+  if (a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false;
+  }
+  return true;
+}
+
 function persistCanonicalProjectionRow(
   slug: string,
   markdown: string,
@@ -341,9 +351,13 @@ export async function deriveProjectionFromCanonicalDoc(
     parser.schema as any,
   ) as ProseMirrorNode;
   const markdown = await serializeMarkdown(root);
+  const marks = encodeMarksMap(ydoc.getMap('marks'));
   return {
-    markdown: stripEphemeralCollabSpans(markdown),
-    marks: encodeMarksMap(ydoc.getMap('marks')),
+    markdown: stripAllProofSpanTagsWithReplacements(
+      stripEphemeralCollabSpans(markdown).replace(/&#x20;|&#32;/gi, ' '),
+      buildProofSpanProjectionReplacementMap(marks as Record<string, { kind?: unknown; quote?: unknown; content?: unknown }>),
+    ),
+    marks,
   };
 }
 
@@ -407,11 +421,13 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
   let authoritativeMarks = stripAuthoredMarks(parseMarks(doc.marks));
   const persistedState = await buildPersistedCanonicalState(doc);
   const ydoc = handle.ydoc;
+  let authoritativeLiveStateVector: Uint8Array | null = null;
 
   if (liveRequired && handle.source === 'live') {
     const derivedCurrent = await deriveProjectionFromCanonicalDoc(ydoc);
     authoritativeMarkdown = stripEphemeralCollabSpans(derivedCurrent.markdown);
     authoritativeMarks = stripAuthoredMarks(derivedCurrent.marks);
+    authoritativeLiveStateVector = Y.encodeStateVector(ydoc);
   }
   const nextMarksBase = hasExplicitNextMarks ? nextMarks : authoritativeMarks;
   const authoredMarks = extractAuthoredMarksFromDoc(parsedNext.doc as ProseMirrorNode, parser.schema as Schema);
@@ -419,16 +435,10 @@ export async function mutateCanonicalDocument(args: CanonicalMutationArgs): Prom
 
   try {
     if (liveRequired) {
-      const liveFragmentHash = await getLoadedCollabFragmentTextHash(args.slug);
-      const expectedCurrentFragmentHash = await computeFragmentTextHashFromMarkdown(authoritativeMarkdown);
-      if (
-        (expectedCurrentFragmentHash !== null && liveFragmentHash !== expectedCurrentFragmentHash)
-        || (
-          expectedCurrentFragmentHash === null
-          && liveFragmentHash === null
-          && stripEphemeralCollabSpans(ydoc.getText('markdown').toString()) !== authoritativeMarkdown
-        )
-      ) {
+      const liveStateVectorChanged = handle.source === 'live'
+        && authoritativeLiveStateVector !== null
+        && !stateVectorsEqual(authoritativeLiveStateVector, Y.encodeStateVector(ydoc));
+      if (liveStateVectorChanged) {
         return {
           ok: false,
           status: 409,

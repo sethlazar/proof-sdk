@@ -48,7 +48,7 @@ import {
   summarizeParseError,
 } from './milkdown-headless.js';
 import {
-  buildProofSpanReplacementMap,
+  buildProofSpanProjectionReplacementMap,
   stripAllProofSpanTagsWithReplacements,
 } from './proof-span-strip.js';
 import { normalizeAgentScopedId } from '../src/shared/agent-identity.js';
@@ -1267,7 +1267,7 @@ function getFragmentPlainTextFromDoc(doc: Y.Doc): string {
     const marks = canonicalizeStoredMarks(encodeMarksMap(doc.getMap('marks')));
     const sanitizedFragmentText = stripAllProofSpanTagsWithReplacements(
       rawFragmentText,
-      buildProofSpanReplacementMap(marks),
+      buildProofSpanProjectionReplacementMap(marks),
     );
     return normalizeMarkdownForDriftComparison(sanitizedFragmentText);
   } catch {
@@ -1545,6 +1545,10 @@ function shouldEmitSuppressionSummary(suppressedCount: number): boolean {
   return suppressedCount === 10 || suppressedCount === 50 || suppressedCount === 100;
 }
 
+function decodeProjectionSpaceEntities(markdown: string): string {
+  return markdown.replace(/&#x20;|&#32;/gi, ' ');
+}
+
 async function deriveMarkdownProjectionFromFragment(doc: Y.Doc): Promise<string | null> {
   if ((process.env.COLLAB_FORCE_DERIVE_FRAGMENT_MARKDOWN_FAILURE || '').trim() === '1') {
     return null;
@@ -1557,10 +1561,10 @@ async function deriveMarkdownProjectionFromFragment(doc: Y.Doc): Promise<string 
     ) as ProseMirrorNode;
     const serialized = await serializeMarkdown(root);
     const marks = canonicalizeStoredMarks(encodeMarksMap(doc.getMap('marks')));
-    return stripAllProofSpanTagsWithReplacements(
+    return decodeProjectionSpaceEntities(stripAllProofSpanTagsWithReplacements(
       stripEphemeralCollabSpans(serialized),
-      buildProofSpanReplacementMap(marks),
-    );
+      buildProofSpanProjectionReplacementMap(marks),
+    ));
   } catch (error) {
     console.error('[collab] failed to derive markdown from fragment for projection repair', {
       error: summarizeParseError(error),

@@ -210,6 +210,10 @@ export function __getMarkAnchorHydrationFailureCount(): number {
   return markAnchorHydrationFailures.size;
 }
 
+export function __resetResolvedMarkTombstones(): void {
+  resolvedMarkTombstones.clear();
+}
+
 function markResolvedMarkIds(
   ids: string[],
   now: number = Date.now(),
