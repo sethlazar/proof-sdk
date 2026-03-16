@@ -6032,10 +6032,11 @@ class ProofEditorImpl implements ProofEditor {
     this.initialMarksSynced = true;
 
     if (this.isShareMode) {
-      if (this.collabEnabled && this.collabCanEdit && this.editor) {
-        const serializer = this.editor.ctx.get(serializerCtx);
-        this.syncShareCollabStateFromView(view, serializer);
-      }
+      // During ordinary tracked typing, y-prosemirror already carries the content
+      // change into the live collab fragment. Replaying the whole editor state again
+      // from the marks callback can duplicate freshly typed suggestion content on the
+      // server. Keep the old suggestion engine path: let content flow through the
+      // existing collab binding, then flush mark metadata separately.
       this.scheduleShareMarksFlush();
     } else if (this.collabEnabled && this.collabCanEdit) {
       collabClient.setMarksMetadata(metadata);
@@ -9447,6 +9448,8 @@ class ProofEditorImpl implements ProofEditor {
   ): Promise<boolean> {
     if (!this.editor || !this.isShareMode) return false;
 
+    const FAST_SHARE_SUGGESTION_SYNC_WAIT_MS = 350;
+
     let metadata: Record<string, unknown> | null = null;
     let expectedQuotes: Record<string, string> = {};
     let projectionMarkdown: string | null = null;
@@ -9494,12 +9497,9 @@ class ProofEditorImpl implements ProofEditor {
       });
 
     let synced = false;
-    if (
-      this.collabEnabled
-      && this.collabCanEdit
-      && this.editor
-      && collabProjectionCanSatisfyExpectedQuotes
-    ) {
+    const canPublishIntoLiveCollab = this.collabEnabled && this.collabCanEdit && this.editor;
+
+    if (canPublishIntoLiveCollab) {
       this.editor.action((ctx) => {
         const view = ctx.get(editorViewCtx);
         if (projectionMarkdown) {
@@ -9507,18 +9507,29 @@ class ProofEditorImpl implements ProofEditor {
         }
         collabClient.setMarksMetadata(metadata as Record<string, StoredMark>);
       });
-      synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);
     }
 
-    if (!synced && projectionMarkdown) {
+    if (projectionMarkdown) {
       const pushed = await shareClient.pushUpdate(
         projectionMarkdown,
         metadata as Record<string, StoredMark>,
         actor,
       );
       if (pushed) {
-        synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);
+        synced = await this.waitForShareSuggestionMetadata(
+          markIds,
+          expectedQuotes,
+          FAST_SHARE_SUGGESTION_SYNC_WAIT_MS,
+        );
       }
+    }
+
+    if (!synced && canPublishIntoLiveCollab && collabProjectionCanSatisfyExpectedQuotes) {
+      synced = await this.waitForShareSuggestionMetadata(
+        markIds,
+        expectedQuotes,
+        FAST_SHARE_SUGGESTION_SYNC_WAIT_MS,
+      );
     }
 
     if (!synced) {
@@ -9633,7 +9644,6 @@ class ProofEditorImpl implements ProofEditor {
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       const parser = ctx.get(parserCtx);
-      const serializer = ctx.get(serializerCtx);
       if (this.isShareMode) this.suppressMarksSync = true;
       try {
         success = acceptMark(view, markId, parser);
@@ -9647,10 +9657,12 @@ class ProofEditorImpl implements ProofEditor {
           pruneMissingSuggestions: true,
         });
       }
-
-      if (this.isShareMode && (success || Boolean(serverMarks))) {
-        this.syncShareCollabStateFromView(view, serializer);
-      }
+      // In the persisted review path, the server has already committed the accept
+      // and the local ProseMirror transaction has already flowed through the
+      // collab binding. Forcing another whole-document collab sync here can leave
+      // the share banner stuck on "Unsaved" even though the canonical document is
+      // already clean. Let the existing suggestion engine and collab runtime
+      // converge naturally instead of replaying the whole state again.
 
       if (success) {
         console.log('[markAcceptPersisted] Accepted:', success);
@@ -9708,7 +9720,6 @@ class ProofEditorImpl implements ProofEditor {
     let success = false;
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
-      const serializer = ctx.get(serializerCtx);
       if (this.isShareMode) this.suppressMarksSync = true;
       try {
         success = rejectMark(view, markId);
@@ -9722,10 +9733,9 @@ class ProofEditorImpl implements ProofEditor {
           pruneMissingSuggestions: true,
         });
       }
-
-      if (this.isShareMode && (success || Boolean(serverMarks))) {
-        this.syncShareCollabStateFromView(view, serializer);
-      }
+      // As with persisted accepts, the server-side reject is already authoritative
+      // here. Avoid replaying a second full collab sync from the UI layer, which
+      // can strand the share status in an unsaved state after the review action.
 
       if (success) {
         console.log('[markRejectPersisted] Rejected:', success);

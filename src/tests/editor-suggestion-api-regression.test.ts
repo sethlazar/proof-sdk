@@ -298,13 +298,13 @@ function run(): void {
   const handleMarksChangeBlock = sliceBetween(editorSource, '  private handleMarksChange(', '\n  private serializeMarkdown(');
   assert(
     handleMarksChangeBlock.includes('if (this.isShareMode) {')
-      && handleMarksChangeBlock.includes('if (this.collabEnabled && this.collabCanEdit && this.editor) {')
-      && handleMarksChangeBlock.includes('const serializer = this.editor.ctx.get(serializerCtx);')
-      && handleMarksChangeBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
       && handleMarksChangeBlock.includes('this.scheduleShareMarksFlush();')
+      && !handleMarksChangeBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
+      && handleMarksChangeBlock.includes('let content flow through the')
+      && handleMarksChangeBlock.includes('existing collab binding, then flush mark metadata separately.')
       && handleMarksChangeBlock.includes('} else if (this.collabEnabled && this.collabCanEdit) {')
       && handleMarksChangeBlock.includes('collabClient.setMarksMetadata(metadata);'),
-    'Expected share mode mark updates to sync the live editor projection back into collab immediately while still deferring the share mark flush',
+    'Expected share mode mark updates to avoid replaying the whole editor projection during ordinary tracked typing, while still deferring the share mark flush and syncing marks directly outside share mode',
   );
 
   const rejectSuggestionBlock = sliceBetween(editorSource, '  rejectSuggestion(id: string): boolean {', '\n  /**');
@@ -341,9 +341,11 @@ function run(): void {
       && markAcceptPersistedBlock.includes("const effectiveResult = await this.retryShareSuggestionMutationAfterSync(")
       && markAcceptPersistedBlock.includes('const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(')
       && markAcceptPersistedBlock.includes('success = acceptMark(view, markId, parser);')
-      && markAcceptPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
-      && markAcceptPersistedBlock.includes('pruneMissingSuggestions: true'),
-    'Expected markAcceptPersisted to retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, sanitize stale resolved suggestions, and then prune resolved suggestions from the local share-mode UI',
+      && markAcceptPersistedBlock.includes('pruneMissingSuggestions: true')
+      && !markAcceptPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
+      && markAcceptPersistedBlock.includes('Let the existing suggestion engine and collab runtime')
+      && markAcceptPersistedBlock.includes('replaying the whole state again.'),
+    'Expected markAcceptPersisted to retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, sanitize stale resolved suggestions, prune resolved suggestions from the local share-mode UI, and avoid a redundant full collab replay after the server has already committed the accept',
   );
 
   const markRejectPersistedBlock = sliceBetween(editorSource, '  async markRejectPersisted(markId: string): Promise<boolean> {', '\n  /**\n   * Accept all pending suggestions\n   */');
@@ -358,9 +360,10 @@ function run(): void {
       && markRejectPersistedBlock.includes("const effectiveResult = await this.retryShareSuggestionMutationAfterSync(")
       && markRejectPersistedBlock.includes('const serverMarks = this.sanitizeFinalizedSuggestionServerMarks(')
       && markRejectPersistedBlock.includes('success = rejectMark(view, markId);')
-      && markRejectPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
-      && markRejectPersistedBlock.includes('pruneMissingSuggestions: true'),
-    'Expected markRejectPersisted to retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, sanitize stale resolved suggestions, and then prune resolved suggestions from the local share-mode UI',
+      && markRejectPersistedBlock.includes('pruneMissingSuggestions: true')
+      && !markRejectPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
+      && markRejectPersistedBlock.includes('replaying a second full collab sync from the UI layer'),
+    'Expected markRejectPersisted to retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, sanitize stale resolved suggestions, prune resolved suggestions from the local share-mode UI, and avoid a redundant full collab replay after the server has already committed the reject',
   );
   const updateShareEditGateBlock = sliceBetween(editorSource, '  private updateShareEditGate(): void {', '\n  private ensureShareWebSocketConnection(): void {');
   assert(
@@ -390,19 +393,20 @@ function run(): void {
       && editorSource.includes('return { markIds: missingMarkIds.length > 0 ? missingMarkIds : null };')
       && editorSource.includes('metadata = entries.length > 0 ? Object.fromEntries(entries) : null;')
       && editorSource.includes('expectedQuotes = Object.fromEntries(')
+      && editorSource.includes('const FAST_SHARE_SUGGESTION_SYNC_WAIT_MS = 350;')
       && editorSource.includes('const serialized = this.normalizeMarkdownForRuntime(serializer(view.state.doc));')
       && editorSource.includes('projectionMarkdown = extractMarks(serialized).content;')
       && editorSource.includes('collabProjectionMarkdown = projectionMarkdown')
       && editorSource.includes('const collabProjectionCanSatisfyExpectedQuotes = !collabProjectionMarkdown')
-      && editorSource.includes('&& collabProjectionCanSatisfyExpectedQuotes')
       && editorSource.includes("this.publishProjectionMarkdown(view, projectionMarkdown, 'review-backfill');")
       && editorSource.includes('collabClient.setMarksMetadata(metadata as Record<string, StoredMark>);')
-      && editorSource.includes('synced = await this.waitForShareSuggestionMetadata(markIds, expectedQuotes);')
       && editorSource.includes('const pushed = await shareClient.pushUpdate(')
+      && editorSource.includes('FAST_SHARE_SUGGESTION_SYNC_WAIT_MS')
+      && editorSource.includes('if (!synced && canPublishIntoLiveCollab && collabProjectionCanSatisfyExpectedQuotes) {')
       && editorSource.includes('private async waitForShareSuggestionMetadata(')
       && editorSource.includes('expectedQuotes: Record<string, string> = {}')
       && editorSource.includes('return !expected || content.includes(expected);'),
-    'Expected share suggestion persistence to skip dead-end collab quote waits when the semantic projection intentionally hides the missing quote, then persist the live markdown plus marks and wait for the live quote to exist server-side before retrying',
+    'Expected share suggestion persistence to publish the live projection immediately on hydration misses, retry against the faster persisted state instead of waiting on passive collab propagation, and still skip dead-end collab quote waits when the semantic projection intentionally hides the missing quote',
   );
 
   const navigateNextSuggestionBlock = sliceBetween(editorSource, '  navigateToNextSuggestion(): string | null {', '\n  /**\n   * Navigate to the previous pending suggestion\n   */');
