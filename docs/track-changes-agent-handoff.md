@@ -265,6 +265,14 @@ Use this loop:
 
 Do not trust a green unit test if the browser still drifts. Do not trust a good-looking browser if the server state is wrong.
 
+For the current canonical visible-browser repro, read this first:
+
+- `docs/track-changes-visible-ui-test.md`
+
+Append each attempt here:
+
+- `docs/track-changes-automation-log.md`
+
 ## Minimum Browser Verification Sequence
 
 Before telling Seth something is fixed, you should personally complete this exact sequence in the remote-debug browser:
@@ -284,6 +292,23 @@ Before telling Seth something is fixed, you should personally complete this exac
 13. Confirm the server-side document state is also correct.
 
 If any of those steps fails, the bug is not fixed.
+
+## Current Stronger UI-Path Repro
+
+The older minimum browser sequence is still useful, but the strongest current failure is more specific and must be checked through the visible UI path.
+
+See:
+
+- `docs/track-changes-visible-ui-test.md`
+
+In short:
+
+1. Use the same visible browser session the user can see.
+2. Create pending insert suggestions on separate lines.
+3. Click the right-hand rail for the latest one.
+4. Confirm the side review panel visibly opens.
+5. Click the visible `Accept` button.
+6. Fail the run if the doc duplicates prior text, if `Accept` is inert, or if one giant insert absorbs older content.
 
 ## Suggested Ways To Inspect State
 
