@@ -2222,8 +2222,12 @@ class MarkPopoverController {
       if (!canEdit) return;
       this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId, mark.kind);
     }, {
-      preventMousePointerDown: true,
-      preventMouseDown: true,
+      // Keep touch-safe behavior, but let desktop mouse actions fire on click.
+      // Otherwise one physical click can accept the current suggestion on
+      // pointerdown, then land a trailing synthetic click on the next
+      // suggestion after the panel auto-advances.
+      preventMousePointerDown: false,
+      preventMouseDown: false,
     });
 
     const rejectButton = document.createElement('button');
@@ -2234,8 +2238,8 @@ class MarkPopoverController {
       if (!canEdit) return;
       this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId, mark.kind);
     }, {
-      preventMousePointerDown: true,
-      preventMouseDown: true,
+      preventMousePointerDown: false,
+      preventMouseDown: false,
     });
 
     if (canEdit) {
@@ -2250,8 +2254,8 @@ class MarkPopoverController {
     installTouchSafeButton(previousButton, () => {
       this.navigateToSuggestion(previousMarkId);
     }, {
-      preventMousePointerDown: true,
-      preventMouseDown: true,
+      preventMousePointerDown: false,
+      preventMouseDown: false,
     });
     previousButton.disabled = !previousMarkId;
     actions.appendChild(previousButton);
@@ -2263,8 +2267,8 @@ class MarkPopoverController {
     installTouchSafeButton(nextButton, () => {
       this.navigateToSuggestion(nextMarkId);
     }, {
-      preventMousePointerDown: true,
-      preventMouseDown: true,
+      preventMousePointerDown: false,
+      preventMouseDown: false,
     });
     nextButton.disabled = !nextMarkId;
     actions.appendChild(nextButton);
@@ -2275,8 +2279,8 @@ class MarkPopoverController {
     installTouchSafeButton(closeButton, () => {
       this.close();
     }, {
-      preventMousePointerDown: true,
-      preventMouseDown: true,
+      preventMousePointerDown: false,
+      preventMouseDown: false,
     });
     actions.appendChild(closeButton);
 

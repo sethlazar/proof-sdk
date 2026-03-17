@@ -210,10 +210,30 @@ function run(): void {
       && popoverSource.includes("if (event.pointerType === 'mouse' && (preventMousePointerDown || preventMouseDown)) {")
       && popoverSource.includes('if (skipSyntheticClick) return;')
       && popoverSource.includes('if (preventMouseDown) {')
-      && popoverSource.includes('preventMousePointerDown: true,')
-      && popoverSource.includes('preventMouseDown: true,')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct review entry points, a simple-markup suggestion rail that merges adjacent changed lines into a continuous narrow rail with rounded endcaps and only labels multi-change lines, capture-phase review key handling, persisted review actions that avoid share-mode accept races, retry transient review actions, timer-backed followup reopening for sequential review, active suggestion navigation that advances after review, and first-click side-panel review buttons that suppress the desktop focus steal',
+    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct review entry points, a simple-markup suggestion rail that merges adjacent changed lines into a continuous narrow rail with rounded endcaps and only labels multi-change lines, capture-phase review key handling, persisted review actions that avoid share-mode accept races, retry transient review actions, timer-backed followup reopening for sequential review, and active suggestion navigation that advances after review',
+  );
+  const acceptButtonBlock = sliceBetween(
+    popoverSource,
+    "    const applyButton = document.createElement('button');",
+    "\n    const rejectButton = document.createElement('button');",
+  );
+  assert(
+    acceptButtonBlock.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId, mark.kind);")
+      && acceptButtonBlock.includes('preventMousePointerDown: false,')
+      && acceptButtonBlock.includes('preventMouseDown: false,'),
+    'Expected side-panel Accept to use normal mouse click sequencing so one physical click cannot spill into the next reviewed suggestion after the panel auto-advances',
+  );
+  const rejectButtonBlock = sliceBetween(
+    popoverSource,
+    "    const rejectButton = document.createElement('button');",
+    '\n\n    if (canEdit) {',
+  );
+  assert(
+    rejectButtonBlock.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId, mark.kind);")
+      && rejectButtonBlock.includes('preventMousePointerDown: false,')
+      && rejectButtonBlock.includes('preventMouseDown: false,'),
+    'Expected side-panel Reject to use normal mouse click sequencing so one physical click cannot spill into the next reviewed suggestion after the panel auto-advances',
   );
   assert(
     contextMenuSource.includes('resolveSuggestionContext(')
