@@ -129,3 +129,35 @@ Append one entry per automation run.
 - Next hypothesis:
   - none for this run; stop code changes here
   - if a manual repro still appears in a different window, inspect that exact live session before changing the code again
+
+### 2026-03-17 15:03 AEDT
+
+- Agent: Codex main thread
+- Branch: `codex/minty-track-changes-parallel-20260317-095154`
+- Commit: `3d0ac27`
+- Fresh doc URL: `http://127.0.0.1:4284/d/kbz7uc6n?token=967b1681-8cb6-4eb6-8fd4-afa1e0f3d18b`
+- Visible browser title: `Track changes individuation repro 2 - Proof`
+- Test sequence attempted:
+  - rebuilt the client bundle after patching the persisted share-review path
+  - used a fresh cacheless Chrome profile on remote-debugging port `9248` through OpenClaw
+  - opened fresh doc `kbz7uc6n`, turned on `Track Changes`, and typed three separate insertions in three different paragraphs using visible UI keystrokes
+  - verified `GET /api/agent/kbz7uc6n/state` showed the same three pending insert suggestions before review
+  - clicked the literal right-hand rail marker for each suggestion
+  - clicked the visible side-panel `Accept` button once per item and let the panel auto-advance
+  - checked browser pending suggestions plus canonical `/state` after each accept
+- Did the rail open the side panel? Yes
+- Did clicking visible `Accept` work? Yes
+- Did the suggestion count decrease correctly? Yes, exactly `3 -> 2 -> 1 -> 0`
+- Did any duplicated text appear? No
+- Did server state match the visible browser? Yes; browser pending suggestions and `/state.marks` matched after every accept, ending at zero
+- Files changed:
+  - `src/editor/index.ts`
+  - `src/tests/editor-suggestion-api-regression.test.ts`
+- Tests run:
+  - `npx tsx src/tests/editor-suggestion-api-regression.test.ts` (pass)
+  - `npx tsx src/tests/collab-client-marks-preservation.test.ts` (pass)
+  - `npm run build` (pass)
+  - fresh visible Chrome UI run on `kbz7uc6n`: three tracked insertions, rail click + side-panel `Accept` x3, UI/server counts verified after each accept (pass)
+- Result: PASS. Commit `3d0ac27` keeps the canonical fresh-session visible rail -> side-panel accept loop green, with no accept-all spillover and server state matching throughout.
+- Next hypothesis:
+  - if a manual repro still appears in an older window, inspect or refresh that exact stale session before changing more code; this fresh-session canonical path is green on `3d0ac27`
