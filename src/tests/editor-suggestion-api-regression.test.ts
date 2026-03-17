@@ -202,6 +202,7 @@ function run(): void {
       && popoverSource.includes('this.openSuggestionAfterReview(nextMarkId, markId);')
       && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
+      && popoverSource.includes("this.focusSheetContainer({ immediate: true });")
       && popoverSource.includes('preventMousePointerDown = false,')
       && popoverSource.includes('preventMouseDown = false,')
       && popoverSource.includes("button.addEventListener('pointerdown', event => {")
@@ -234,6 +235,17 @@ function run(): void {
       && rejectButtonBlock.includes('preventMousePointerDown: false,')
       && rejectButtonBlock.includes('preventMouseDown: false,'),
     'Expected side-panel Reject to use normal mouse click sequencing so one physical click cannot spill into the next reviewed suggestion after the panel auto-advances',
+  );
+  const focusSheetContainerBlock = sliceBetween(
+    popoverSource,
+    '  private focusSheetContainer(options?: { immediate?: boolean }): void {',
+    '\n\n  private ensureAnchorVisible(): void {',
+  );
+  assert(
+    focusSheetContainerBlock.includes('if (options?.immediate) {')
+      && focusSheetContainerBlock.includes('focus();')
+      && focusSheetContainerBlock.includes('requestAnimationFrame(focus);'),
+    'Expected the desktop side panel to take focus immediately on open so the first visible Accept click is not consumed by the editor-to-panel focus handoff',
   );
   assert(
     contextMenuSource.includes('resolveSuggestionContext(')

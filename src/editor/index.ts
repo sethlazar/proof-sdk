@@ -1650,12 +1650,20 @@ class ProofEditorImpl implements ProofEditor {
             return;
           }
 
-          let mergedIncomingMarks = mergePendingServerMarks(this.lastReceivedServerMarks, incomingMarks);
+          let mergedIncomingMarks = mergePendingServerMarks(
+            this.lastReceivedServerMarks,
+            incomingMarks,
+            { dropMissingPendingSuggestions: true },
+          );
           if (this.editor) {
             try {
               this.editor.action((ctx) => {
                 const view = ctx.get(editorViewCtx);
-                mergedIncomingMarks = mergePendingServerMarks(getMarkMetadata(view.state), incomingMarks);
+                mergedIncomingMarks = mergePendingServerMarks(
+                  getMarkMetadata(view.state),
+                  incomingMarks,
+                  { dropMissingPendingSuggestions: true },
+                );
               });
             } catch (error) {
               console.warn('[collab.onMarks] Failed to merge incoming marks with local state:', error);
@@ -5068,14 +5076,20 @@ class ProofEditorImpl implements ProofEditor {
     this.scheduleBannerLayoutUpdate();
   }
 
-  applyExternalMarks(marks: Record<string, StoredMark>): void {
+  applyExternalMarks(
+    marks: Record<string, StoredMark>,
+    options?: { pruneMissingSuggestions?: boolean },
+  ): void {
     if (!this.editor) return;
 
     this.editor.action((ctx) => {
       const view = ctx.get(editorViewCtx);
       // Use applyRemoteMarks to create ProseMirror anchors for new marks
       // (using the `quote` field) and merge metadata for existing marks.
-      applyRemoteMarks(view, marks, { hydrateAnchors: this.collabCanEdit });
+      applyRemoteMarks(view, marks, {
+        hydrateAnchors: this.collabCanEdit,
+        pruneMissingSuggestions: options?.pruneMissingSuggestions === true,
+      });
     });
   }
 
@@ -5087,7 +5101,7 @@ class ProofEditorImpl implements ProofEditor {
     this.applyingCollabRemote = true;
     this.suppressMarksSync = true;
     try {
-      this.applyExternalMarks(this.lastReceivedServerMarks);
+      this.applyExternalMarks(this.lastReceivedServerMarks, { pruneMissingSuggestions: true });
     } finally {
       this.suppressMarksSync = false;
       this.applyingCollabRemote = false;

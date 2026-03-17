@@ -15,6 +15,7 @@ import {
   applyCanonicalDocumentToCollab,
   getCanonicalReadableDocumentSync,
   getLoadedCollabMarkdown,
+  getLoadedCollabStateSnapshot,
   invalidateCollabDocument,
   isCanonicalReadMutationReady,
   type CanonicalReadableDocument,
@@ -66,6 +67,42 @@ function canUseLoadedCollabFallbackForMutation(
 
 function getCanonicalReadableDocument(slug: string) {
   return getCanonicalReadableDocumentSync(slug, 'state') ?? getDocumentBySlug(slug);
+}
+
+function maybePreferLoadedCollabSuggestionMutationDoc(
+  slug: string,
+  doc: NonNullable<ReturnType<typeof getCanonicalReadableDocument>>,
+  markId: string,
+): NonNullable<ReturnType<typeof getCanonicalReadableDocument>> {
+  if ((doc as { read_source?: string }).read_source !== 'canonical_row') return doc;
+
+  const liveState = getLoadedCollabStateSnapshot(slug);
+  if (!liveState) return doc;
+  if (!Object.prototype.hasOwnProperty.call(liveState.marks, markId)) return doc;
+
+  const canonicalMarks = parseMarks(doc.marks);
+  const liveHasAdditionalMarks = Object.keys(liveState.marks).some(
+    (liveMarkId) => !Object.prototype.hasOwnProperty.call(canonicalMarks, liveMarkId),
+  );
+  const markdownDiffers = liveState.markdown !== doc.markdown;
+  if (!liveHasAdditionalMarks && !markdownDiffers) return doc;
+
+  console.warn('[document-engine] Preferring loaded collab state for suggestion mutation', {
+    slug,
+    markId,
+    readSource: (doc as { read_source?: string }).read_source ?? null,
+    canonicalMarkCount: Object.keys(canonicalMarks).length,
+    liveMarkCount: Object.keys(liveState.marks).length,
+    markdownDiffers,
+  });
+
+  return {
+    ...doc,
+    markdown: liveState.markdown,
+    marks: JSON.stringify(liveState.marks),
+    mutation_ready: true,
+    read_source: 'yjs_fallback',
+  };
 }
 
 function getMutationReadyDocument(
@@ -1286,8 +1323,9 @@ async function updateSuggestionStatusAsync(
   const doc = ready.doc;
   const markId = typeof body.markId === 'string' ? body.markId : '';
   if (!markId) return { status: 400, body: { success: false, error: 'Missing markId' } };
+  const mutationDoc = maybePreferLoadedCollabSuggestionMutationDoc(slug, doc, markId);
 
-  const marks = parseMarks(doc.marks);
+  const marks = parseMarks(mutationDoc.marks);
   const existing = marks[markId];
   if (!existing) {
     const revisionHint = typeof body.baseRevision === 'number'
@@ -1312,8 +1350,8 @@ async function updateSuggestionStatusAsync(
       status: 200,
       body: {
         success: true,
-        shareState: doc.share_state,
-        updatedAt: doc.updated_at,
+        shareState: mutationDoc.share_state,
+        updatedAt: mutationDoc.updated_at,
         marks,
       },
     };
@@ -1324,12 +1362,12 @@ async function updateSuggestionStatusAsync(
   }
 
   let structuredResult = await finalizeSuggestionThroughRehydration({
-    markdown: doc.markdown,
+    markdown: mutationDoc.markdown,
     marks,
     markId,
     action: status === 'accepted' ? 'accept' : 'reject',
   });
-  let mutationBaseRevision = doc.revision;
+  let mutationBaseRevision = mutationDoc.revision;
   if (
     !structuredResult.ok
     && structuredResult.code === 'MARK_NOT_HYDRATED'
@@ -1338,8 +1376,8 @@ async function updateSuggestionStatusAsync(
       slug,
       markId,
       status,
-      initialReadSource: (doc as { read_source?: string }).read_source ?? null,
-      initialRevision: doc.revision,
+      initialReadSource: (mutationDoc as { read_source?: string }).read_source ?? null,
+      initialRevision: mutationDoc.revision,
     });
     const canonicalRow = getDocumentBySlug(slug);
     if (canonicalRow && canonicalRow.revision !== null) {
@@ -1378,7 +1416,7 @@ async function updateSuggestionStatusAsync(
             slug,
             markId,
             status,
-            readSource: (doc as { read_source?: string }).read_source ?? null,
+            readSource: (mutationDoc as { read_source?: string }).read_source ?? null,
             canonicalRevision: canonicalRow.revision,
           });
           structuredResult = retriedStructuredResult;

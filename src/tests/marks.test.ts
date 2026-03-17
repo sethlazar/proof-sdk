@@ -1823,6 +1823,38 @@ test('mergePendingServerMarks drops stale local suggestion metadata when server 
   assert(!merged.s1, 'Finalized server suggestions should evict stale local pending metadata');
 });
 
+test('mergePendingServerMarks can drop pending suggestions that disappear from an authoritative server snapshot', () => {
+  const merged = mergePendingServerMarks({
+    s1: {
+      kind: 'insert',
+      by: 'ai:r2c2',
+      createdAt: '2026-03-17T12:00:00.000Z',
+      content: 'stale local insert',
+      status: 'pending',
+    },
+    c1: {
+      kind: 'comment',
+      by: 'human:reviewer',
+      createdAt: '2026-03-17T12:00:00.000Z',
+      text: 'keep comment',
+      resolved: false,
+    },
+  }, {
+    c1: {
+      kind: 'comment',
+      by: 'human:reviewer',
+      createdAt: '2026-03-17T12:00:00.000Z',
+      text: 'keep comment',
+      resolved: false,
+    },
+  }, {
+    dropMissingPendingSuggestions: true,
+  });
+
+  assert(!merged.s1, 'Authoritative server snapshots should evict pending suggestions that disappear from the live marks map');
+  assert(Boolean(merged.c1), 'Non-suggestion marks should still survive authoritative snapshot merges');
+});
+
 test('mergePendingServerMarks preserves live local replace edits over stale server snapshots', () => {
   const merged = mergePendingServerMarks({
     s1: {

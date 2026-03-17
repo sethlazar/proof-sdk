@@ -1678,7 +1678,8 @@ function mergeStoredMarkWithFallback(
 
 export function mergePendingServerMarks(
   localMetadata: Record<string, StoredMark>,
-  serverMarks: Record<string, StoredMark>
+  serverMarks: Record<string, StoredMark>,
+  options?: { dropMissingPendingSuggestions?: boolean },
 ): Record<string, StoredMark> {
   const canonicalLocal = canonicalizeStoredMarks(localMetadata);
   const canonicalServer = canonicalizeStoredMarks(serverMarks);
@@ -1740,6 +1741,16 @@ export function mergePendingServerMarks(
       merged[id] = serverMark;
     }
   }
+
+  if (options?.dropMissingPendingSuggestions) {
+    for (const [id, localMark] of Object.entries(canonicalLocal)) {
+      const kind = localMark?.kind;
+      if (kind !== 'insert' && kind !== 'delete' && kind !== 'replace') continue;
+      if (Object.prototype.hasOwnProperty.call(canonicalServer, id)) continue;
+      delete merged[id];
+    }
+  }
+
   return canonicalizeStoredMarks(merged);
 }
 

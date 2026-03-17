@@ -3328,6 +3328,22 @@ export function getLoadedCollabMarkdown(slug: string): string | null {
   }
 }
 
+export function getLoadedCollabStateSnapshot(
+  slug: string,
+): { markdown: string; marks: Record<string, StoredMark> } | null {
+  const handle = loadCanonicalYDocSync(slug);
+  if (!handle) return null;
+  try {
+    const markdown = stripEphemeralCollabSpans(handle.ydoc.getText('markdown').toString());
+    const marks = canonicalizeStoredMarks(
+      mergePreservedActionMarks(slug, encodeMarksMap(handle.ydoc.getMap('marks'))) as Record<string, StoredMark>,
+    );
+    return { markdown, marks };
+  } catch {
+    return null;
+  }
+}
+
 export async function getLoadedCollabMarkdownForVerification(
   slug: string,
 ): Promise<{ markdown: string | null; source: 'ytext' | 'fragment' | 'none' }> {

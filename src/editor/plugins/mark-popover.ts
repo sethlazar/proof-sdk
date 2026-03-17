@@ -1760,6 +1760,9 @@ class MarkPopoverController {
       this.popover.classList.remove('mark-popover-sheet');
       this.backdrop.style.display = 'none';
       positionSidePanel(this.popover, this.view, this.anchor, this.activeMarkId);
+      // Move focus into the desktop panel before the next mouse press so the
+      // first in-panel click is not consumed by the editor -> panel handoff.
+      this.focusSheetContainer({ immediate: true });
     } else {
       this.popover.classList.add('mark-popover-sheet');
       this.backdrop.style.display = 'block';
@@ -1840,14 +1843,22 @@ class MarkPopoverController {
     this.viewportSyncRaf = requestAnimationFrame(step);
   }
 
-  private focusSheetContainer(): void {
-    requestAnimationFrame(() => {
+  private focusSheetContainer(options?: { immediate?: boolean }): void {
+    const focus = () => {
       try {
         this.popover.focus({ preventScroll: true });
       } catch {
         this.popover.focus();
       }
-    });
+    };
+
+    if (options?.immediate) {
+      focus();
+      requestAnimationFrame(focus);
+      return;
+    }
+
+    requestAnimationFrame(focus);
   }
 
   private ensureAnchorVisible(): void {
