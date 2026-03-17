@@ -9474,6 +9474,38 @@ class ProofEditorImpl implements ProofEditor {
     ));
   }
 
+  private shouldBackfillPendingShareSuggestionsBeforeReview(): boolean {
+    if (!this.editor || !this.isShareMode || !this.collabEnabled || !this.collabCanEdit) {
+      return false;
+    }
+    if (this.collabConnectionStatus !== 'connected' || !this.collabIsSynced) {
+      return true;
+    }
+
+    let hasPendingSuggestionDrift = false;
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const localMetadata = getMarkMetadataWithQuotes(view.state);
+      hasPendingSuggestionDrift = Object.entries(localMetadata).some(([localMarkId, value]) => {
+        if (!value || typeof value !== 'object') return false;
+        const mark = value as StoredMark;
+        if (mark.kind !== 'insert' && mark.kind !== 'delete' && mark.kind !== 'replace') return false;
+        if (typeof mark.status === 'string' && mark.status !== 'pending') return false;
+        const serverMark = this.lastReceivedServerMarks[localMarkId];
+        return !serverMark || serverMark.status !== 'pending';
+      });
+    });
+
+    return hasPendingSuggestionDrift;
+  }
+
+  private async ensureShareSuggestionsPersistedBeforeReview(actor: string): Promise<boolean> {
+    if (!this.shouldBackfillPendingShareSuggestionsBeforeReview()) {
+      return true;
+    }
+    return this.backfillMissingShareSuggestionMetadata({ markIds: null }, actor);
+  }
+
   private async backfillMissingShareSuggestionMetadata(
     plan: { markIds: string[] | null },
     actor: string,
@@ -9639,8 +9671,12 @@ class ProofEditorImpl implements ProofEditor {
       return this.markAccept(markId);
     }
 
-    this.flushShareMarks({ keepalive: true, excludeMarkIds: [markId] });
     const actor = getCurrentActor();
+    if (!await this.ensureShareSuggestionsPersistedBeforeReview(actor)) {
+      console.warn('[markAcceptPersisted] Failed to backfill pending share suggestions before accept');
+      return false;
+    }
+    this.flushShareMarks({ keepalive: true, excludeMarkIds: [markId] });
     const result = await shareClient.acceptSuggestion(markId, actor);
     const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);
     const retriedResult = await this.retryShareSuggestionMutationAfterSync(markId, actor, 'accept', result);
@@ -9722,8 +9758,12 @@ class ProofEditorImpl implements ProofEditor {
       return this.markReject(markId);
     }
 
-    this.flushShareMarks({ keepalive: true });
     const actor = getCurrentActor();
+    if (!await this.ensureShareSuggestionsPersistedBeforeReview(actor)) {
+      console.warn('[markRejectPersisted] Failed to backfill pending share suggestions before reject');
+      return false;
+    }
+    this.flushShareMarks({ keepalive: true });
     const result = await shareClient.rejectSuggestion(markId, actor);
     const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);
     const retriedResult = await this.retryShareSuggestionMutationAfterSync(markId, actor, 'reject', result);

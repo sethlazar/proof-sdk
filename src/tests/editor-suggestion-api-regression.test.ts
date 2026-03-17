@@ -366,6 +366,7 @@ function run(): void {
   const markAcceptPersistedBlock = sliceBetween(editorSource, '  async markAcceptPersisted(markId: string): Promise<boolean> {', '\n  async markRejectPersisted(');
   assert(
     markAcceptPersistedBlock.includes('const result = await shareClient.acceptSuggestion(markId, actor);')
+      && markAcceptPersistedBlock.includes('await this.ensureShareSuggestionsPersistedBeforeReview(actor)')
       && markAcceptPersistedBlock.includes('this.flushShareMarks({ keepalive: true, excludeMarkIds: [markId] });')
       && markAcceptPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
       && markAcceptPersistedBlock.includes("const retriedResult = await this.retryShareSuggestionMutationAfterSync(markId, actor, 'accept', result);")
@@ -383,7 +384,7 @@ function run(): void {
       && !markAcceptPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
       && markAcceptPersistedBlock.includes('Let the existing suggestion engine and collab runtime')
       && markAcceptPersistedBlock.includes('replaying the whole state again.'),
-    'Expected markAcceptPersisted to retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, skip a second local accept when the live collab state already cleared the suggestion, prune resolved suggestions from the local share-mode UI, and avoid a redundant full collab replay after the server has already committed the accept',
+    'Expected markAcceptPersisted to opportunistically backfill unhealthy share-mode suggestion state before accepting, retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, skip a second local accept when the live collab state already cleared the suggestion, prune resolved suggestions from the local share-mode UI, and avoid a redundant full collab replay after the server has already committed the accept',
   );
   const flushShareMarksBlock = sliceBetween(editorSource, '  private flushShareMarks(', '\n  private showReadOnlyBanner(');
   assert(
@@ -397,6 +398,7 @@ function run(): void {
   const markRejectPersistedBlock = sliceBetween(editorSource, '  async markRejectPersisted(markId: string): Promise<boolean> {', '\n  /**\n   * Accept all pending suggestions\n   */');
   assert(
     markRejectPersistedBlock.includes('const result = await shareClient.rejectSuggestion(markId, actor);')
+      && markRejectPersistedBlock.includes('await this.ensureShareSuggestionsPersistedBeforeReview(actor)')
       && markRejectPersistedBlock.includes('this.flushShareMarks({ keepalive: true });')
       && markRejectPersistedBlock.includes('const backfillPlan = this.getShareSuggestionBackfillPlan(markId, result);')
       && markRejectPersistedBlock.includes("const retriedResult = await this.retryShareSuggestionMutationAfterSync(markId, actor, 'reject', result);")
@@ -409,7 +411,7 @@ function run(): void {
       && markRejectPersistedBlock.includes('pruneMissingSuggestions: true')
       && !markRejectPersistedBlock.includes('this.syncShareCollabStateFromView(view, serializer);')
       && markRejectPersistedBlock.includes('replaying a second full collab sync from the UI layer'),
-    'Expected markRejectPersisted to retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, sanitize stale resolved suggestions, prune resolved suggestions from the local share-mode UI, and avoid a redundant full collab replay after the server has already committed the reject',
+    'Expected markRejectPersisted to opportunistically backfill unhealthy share-mode suggestion state before rejecting, retry fragment-divergence/stale-base races both before and after any share suggestion metadata backfill, sanitize stale resolved suggestions, prune resolved suggestions from the local share-mode UI, and avoid a redundant full collab replay after the server has already committed the reject',
   );
   const updateShareEditGateBlock = sliceBetween(editorSource, '  private updateShareEditGate(): void {', '\n  private ensureShareWebSocketConnection(): void {');
   assert(
