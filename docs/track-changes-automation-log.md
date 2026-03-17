@@ -89,3 +89,43 @@ Append one entry per automation run.
 - Next hypothesis:
   - verify commit `4f3d677` first in an unrestricted fresh cacheless visible Chrome session using the literal rail click and visible side-panel `Accept`
   - if the visible duplicate or inert Accept bug still reproduces after this patch, harden the server/collab accept path to reject or repair stale suggestion metadata before canonicalization instead of trusting the pre-accept Yjs fallback state
+
+### 2026-03-17 13:58 AEDT
+
+- Agent: Codex main thread
+- Branch: `codex/minty-track-changes-parallel-20260317-095154`
+- Commit: `d657c37`
+- Fresh doc URL: `http://127.0.0.1:4284/d/er2nnqre?token=42cf9d9c-a625-46e7-b7c3-36d963855e5f`
+- Visible browser title: `Visible accept stale-sync repro - Proof`
+- Test sequence attempted:
+  - launched a fresh cacheless Chrome profile on remote-debugging port `9247`
+  - clicked `Continue anonymously`
+  - toggled `Track Changes` in the visible toolbar
+  - typed three separate tracked insertions in three separate paragraphs using visible UI keystrokes
+  - clicked the literal right-hand rail marker for each remaining suggestion
+  - clicked the visible side-panel `Accept` button once per suggestion
+  - checked live UI pending counts and `GET /api/agent/er2nnqre/state` after each accept
+- Did the rail open the side panel? Yes
+- Did clicking visible `Accept` work? Yes
+- Did the suggestion count decrease correctly? Yes, exactly `3 -> 2 -> 1 -> 0`
+- Did any duplicated text appear? No
+- Did server state match the visible browser? Yes; browser pending suggestions and `/state.marks` matched after each accept, ending at zero
+- Files changed:
+  - `server/collab.ts`
+  - `server/document-engine.ts`
+  - `src/editor/index.ts`
+  - `src/editor/plugins/mark-popover.ts`
+  - `src/editor/plugins/marks.ts`
+  - `src/tests/editor-suggestion-api-regression.test.ts`
+  - `src/tests/marks.test.ts`
+  - `src/tests/suggestion-accept-canonical-row-live-fallback.test.ts`
+- Tests run:
+  - `npx tsx src/tests/marks.test.ts` (pass)
+  - `npx tsx src/tests/editor-suggestion-api-regression.test.ts` (pass)
+  - `npx tsx src/tests/collab-client-marks-preservation.test.ts` (pass)
+  - `npm run build` (pass)
+  - fresh visible Chrome UI run on `er2nnqre`: three tracked insertions, rail click + side-panel `Accept` x3, UI/server counts verified after each accept (pass)
+- Result: PASS. The canonical visible-browser rail -> side-panel accept loop passed in a fresh cacheless Chrome session, with persisted server state matching and no accept-all spillover, duplication, or inert first click.
+- Next hypothesis:
+  - none for this run; stop code changes here
+  - if a manual repro still appears in a different window, inspect that exact live session before changing the code again
