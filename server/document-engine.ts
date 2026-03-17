@@ -683,19 +683,52 @@ function replaceFirstOccurrence(source: string, find: string, replace: string): 
   return `${source.slice(0, idx)}${replace}${source.slice(idx + find.length)}`;
 }
 
-function buildAcceptedSuggestionMarkdown(markdown: string, suggestion: StoredMark): string | null {
+function stripProofSpanByDataId(markdown: string, targetId: string): string {
+  const spanOpenRegex = /<span\b[^>]*>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = spanOpenRegex.exec(markdown)) !== null) {
+    const tag = match[0];
+    if (!/data-proof/i.test(tag)) continue;
+
+    const idMatch = tag.match(/data-id\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
+    const spanId = idMatch?.[1] ?? idMatch?.[2] ?? idMatch?.[3] ?? null;
+    if (spanId !== targetId) continue;
+
+    const openEnd = match.index + tag.length;
+    let depth = 1;
+    const innerRegex = /<\/?span\b[^>]*>/gi;
+    innerRegex.lastIndex = openEnd;
+    let innerMatch: RegExpExecArray | null;
+    while ((innerMatch = innerRegex.exec(markdown)) !== null) {
+      if (innerMatch[0].startsWith('</')) {
+        depth -= 1;
+        if (depth === 0) {
+          const innerContent = markdown.slice(openEnd, innerMatch.index);
+          return markdown.slice(0, match.index) + innerContent + markdown.slice(innerMatch.index + innerMatch[0].length);
+        }
+      } else {
+        depth += 1;
+      }
+    }
+    break;
+  }
+
+  return markdown;
+}
+
+function buildAcceptedSuggestionMarkdown(markdown: string, suggestion: StoredMark, markId?: string): string | null {
   const quote = typeof suggestion.quote === 'string' ? suggestion.quote : '';
   if (!quote) return null;
 
   if (suggestion.kind === 'insert') {
-    const content = typeof suggestion.content === 'string' ? suggestion.content : '';
-    const span = findQuoteSpanInMarkdown(markdown, quote);
-    if (span) {
-      return `${markdown.slice(0, span.end)}${content}${markdown.slice(span.end)}`;
+    if (markId) {
+      return stripProofSpanByDataId(markdown, markId);
     }
-    const idx = markdown.indexOf(quote);
-    if (idx < 0) return null;
-    return `${markdown.slice(0, idx + quote.length)}${content}${markdown.slice(idx + quote.length)}`;
+    const span = findQuoteSpanInMarkdown(markdown, quote);
+    if (span) return markdown;
+    if (markdown.indexOf(quote) >= 0) return markdown;
+    return null;
   }
 
   if (suggestion.kind === 'delete') {
@@ -1132,7 +1165,7 @@ function updateSuggestionStatus(
   let nextMarkdown = doc.markdown;
 
   if (status === 'accepted' && (existing.kind === 'insert' || existing.kind === 'delete' || existing.kind === 'replace')) {
-    const acceptedMarkdown = buildAcceptedSuggestionMarkdown(doc.markdown, existing);
+    const acceptedMarkdown = buildAcceptedSuggestionMarkdown(doc.markdown, existing, markId);
     if (acceptedMarkdown === null) {
       return { status: 409, body: { success: false, error: 'Cannot accept suggestion without quote anchor' } };
     }

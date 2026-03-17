@@ -1787,10 +1787,15 @@ export function setMarkMetadata(view: EditorView, metadata: Record<string, Store
 export function applyRemoteMarks(
   view: EditorView,
   metadata: Record<string, StoredMark>,
-  options?: { hydrateAnchors?: boolean; pruneMissingSuggestions?: boolean }
+  options?: {
+    hydrateAnchors?: boolean;
+    pruneMissingSuggestions?: boolean;
+    hydrateAuthoredAnchors?: boolean;
+  }
 ): void {
   const canonicalMetadata = canonicalizeStoredMarks(metadata);
   const hydrateAnchors = options?.hydrateAnchors !== false;
+  const hydrateAuthoredAnchors = options?.hydrateAuthoredAnchors !== false;
   const pruneMissingSuggestions = options?.pruneMissingSuggestions === true;
   const existingIds = getProofAnchorIds(view.state.doc);
   let tr = view.state.tr;
@@ -1857,6 +1862,7 @@ export function applyRemoteMarks(
       if (existingIds.has(id)) continue; // Already has an anchor
       if (!stored.kind) continue;
       const isAuthored = stored.kind === 'authored';
+      if (isAuthored && !hydrateAuthoredAnchors) continue;
       if (isAuthored && authoredHydrationFailures >= AUTHORED_ANCHOR_HYDRATION_FAILURE_BUDGET_PER_PASS) {
         authoredHydrationSuppressed += 1;
         continue;

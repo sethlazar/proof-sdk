@@ -1180,6 +1180,78 @@ test('applyRemoteMarks caps authored anchor hydration failures per pass', () => 
   );
 });
 
+test('applyRemoteMarks can skip authored anchor hydration while still anchoring other remote marks', () => {
+  const authoredMarkId = 'authored:human:michael:skip-live-hydration';
+  const commentMarkId = 'comment:human:michael:beta';
+  const doc = marksSchema.node('doc', null, [
+    marksSchema.node('paragraph', null, marksSchema.text('alpha beta gamma')),
+  ]);
+
+  const marksStatePlugin = new Plugin({
+    key: marksPluginKey,
+    state: {
+      init: () => ({ metadata: {}, activeMarkId: null }),
+      apply: (tr, value) => {
+        const meta = tr.getMeta(marksPluginKey);
+        if (meta?.type === 'SET_METADATA') {
+          return { ...value, metadata: meta.metadata };
+        }
+        if (meta?.type === 'SET_ACTIVE') {
+          return { ...value, activeMarkId: meta.markId ?? null };
+        }
+        return value;
+      },
+    },
+  });
+
+  let state = EditorState.create({
+    schema: marksSchema,
+    doc,
+    plugins: [marksStatePlugin],
+  });
+
+  const view = {
+    get state() {
+      return state;
+    },
+    dispatch(tr: any) {
+      state = state.apply(tr);
+    },
+  } as any;
+
+  __resetMarkAnchorHydrationFailures();
+  applyRemoteMarks(view, {
+    [authoredMarkId]: {
+      kind: 'authored',
+      by: 'human:michael',
+      quote: 'missing-fragment',
+    },
+    [commentMarkId]: {
+      kind: 'comment',
+      by: 'human:michael',
+      text: 'Review beta',
+      quote: 'beta',
+    },
+  }, {
+    hydrateAuthoredAnchors: false,
+  });
+
+  const marksAfter = getMarks(state);
+  assert(
+    marksAfter.every((mark) => mark.id !== authoredMarkId),
+    'Expected skip-live-hydration mode not to create a ProseMirror authored anchor',
+  );
+  assert(
+    marksAfter.some((mark) => mark.id === commentMarkId && mark.kind === 'comment' && mark.range !== undefined),
+    'Expected non-authored remote marks to keep anchoring normally in skip-live-hydration mode',
+  );
+  assertEqual(
+    __getMarkAnchorHydrationFailureCount(),
+    0,
+    'Expected skip-live-hydration mode not to record authored anchor failures',
+  );
+});
+
 test('applyRemoteMarks rejects quote-less relative anchors', () => {
   const markId = 'm-remote-relative-no-quote';
   const doc = marksSchema.node('doc', null, [

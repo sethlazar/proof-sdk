@@ -525,6 +525,21 @@ function run(): void {
       && markRehydrationSource.includes('const repairedMarks = preserveCanonicalMarks(finalized.marks, canonicalMarks, preservableSuggestionGapIds);'),
     'Expected structured review rehydration to ignore authored hydration-only gaps and preserve unrelated pending suggestions instead of blocking review actions',
   );
+  assert(
+    editorSource.includes('hydrateAuthoredAnchors: options?.hydrateAuthoredAnchors,')
+      && editorSource.includes('hydrateAuthoredAnchors: false,'),
+    'Expected live share mark replays and persisted review reconciles to skip authored anchor hydration',
+  );
+  assert(
+    marksSource.includes('const hydrateAuthoredAnchors = options?.hydrateAuthoredAnchors !== false;')
+      && marksSource.includes('if (isAuthored && !hydrateAuthoredAnchors) continue;'),
+    'Expected applyRemoteMarks to support a lighter replay mode that skips authored span re-anchoring',
+  );
+  assert(
+    editorSource.includes('private stabilizeCursorAfterRemoteYjsTransaction(')
+      && editorSource.includes('if (sourceTransaction?.getMeta?.(marksPluginKey) !== undefined) return;'),
+    'Expected remote cursor stabilization to ignore mark replay transactions so live collab mark sync does not shove the caret forward',
+  );
 
   console.log('✓ suggestion API actions route through share-aware accept/reject persistence');
 }

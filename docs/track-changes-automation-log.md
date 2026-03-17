@@ -161,3 +161,67 @@ Append one entry per automation run.
 - Result: PASS. Commit `3d0ac27` keeps the canonical fresh-session visible rail -> side-panel accept loop green, with no accept-all spillover and server state matching throughout.
 - Next hypothesis:
   - if a manual repro still appears in an older window, inspect or refresh that exact stale session before changing more code; this fresh-session canonical path is green on `3d0ac27`
+
+### 2026-03-17 16:07 AEDT
+
+- Agent: Codex main thread
+- Branch: `codex/minty-track-changes-parallel-20260317-095154`
+- Commit: uncommitted worktree changes on top of `3d0ac27`
+- Fresh doc URL: `http://127.0.0.1:4284/d/cc7qa688?token=0a750306-64e4-43e4-bfcb-7c6d86081251`
+- Visible browser title: `Untitled - Proof`
+- Test sequence attempted:
+  - monitored the fresh visible `9249` Chrome session on doc `5i749ett` while Seth reproduced hangs and cursor jumps
+  - captured CDP/runtime/network traces plus `/api/agent/5i749ett/state` polling, which showed the server healthy while the page main thread stopped answering and authored-mark replay warnings flooded the console
+  - patched live collab mark replay so replay-only reconciles skip authored anchor hydration
+  - patched remote cursor stabilization so `stabilizeCursorAfterRemoteYjsTransaction()` ignores mark-only replay transactions
+  - added targeted regressions for the lighter replay mode and the cursor-stabilizer guard
+  - rebuilt the client bundle and opened fresh clean doc `cc7qa688` in a separate isolated browser profile
+  - cleared `Continue anonymously` and re-enabled `Track Changes`, but the session ended before the final manual visible-browser repro on the rebuilt bundle
+- Did the rail open the side panel? Not re-run after the latest patch set
+- Did clicking visible `Accept` work? Not re-run after the latest patch set
+- Did any duplicated text appear? Not re-run after the latest patch set
+- Did server state match the visible browser? Not re-run after the latest patch set
+- Files changed:
+  - `src/editor/index.ts`
+  - `src/editor/plugins/marks.ts`
+  - `src/tests/editor-suggestion-api-regression.test.ts`
+  - `src/tests/marks.test.ts`
+- Tests run:
+  - `npx tsx src/tests/marks.test.ts` (pass)
+  - `npx tsx src/tests/editor-suggestion-api-regression.test.ts` (pass)
+  - `npm run build` (pass)
+- Result: partial progress only. The likely client-side replay/cursor-jump path is now patched and source/build verification is green, but the canonical manual visible-browser repro was not completed before session end, so there is no new commit for this run.
+- Next hypothesis:
+  - manually repro on `cc7qa688` first using real typing in the visible browser, not OpenClaw synthetic typing
+  - if the cursor still snaps to the end or the page still hangs, inspect `scheduleContentSync()` -> `repairCollabStateFromEditor()` -> `collabClient.syncEditorState()` for whole-fragment replacement during active typing/backspace/undo and either defer that repair while focused local editing is in flight or preserve selection/bookmarks across the repair
+
+### 2026-03-17 21:35 AEDT
+
+- Agent: Codex main thread
+- Branch: `codex/minty-track-changes-parallel-20260317-095154`
+- Commit: uncommitted worktree changes on top of `5eaf63c`
+- Fresh doc URL: `http://127.0.0.1:4000/d/r6tnt64k?token=ebe62501-100b-4bcb-a777-f721d9c36628`
+- Visible browser title: user-verified fresh local Chrome profile on the rebuilt `095154` worktree
+- Test sequence attempted:
+  - rebuilt the resumed `095154` worktree and served it locally from `http://127.0.0.1:4000`
+  - opened a fresh no-cache Chrome profile on new doc `r6tnt64k` and had Seth manually verify the visible track-changes flow
+  - compared the sibling `105126`, `115140`, `125143`, `135150`, `145200`, and `155202` worktrees for anything uniquely worth keeping before merge
+  - ported the useful keeper from the later line: an insert-accept duplication regression plus the corresponding `document-engine` fix so accepted inserts stop duplicating already-present text
+- Did the rail open the side panel? Yes in Seth's manual local check
+- Did clicking visible `Accept` work? Yes in Seth's manual local check
+- Did any duplicated text appear? No in the visible manual check; direct insert-accept duplication is now covered by a dedicated regression test
+- Did server state match the visible browser? Yes in the visible manual check
+- Files changed:
+  - `server/document-engine.ts`
+  - `src/tests/insert-accept-duplication-regression.test.ts`
+  - plus the existing uncommitted `095154` replay/cursor fixes in `src/editor/index.ts`, `src/editor/plugins/marks.ts`, `src/tests/editor-suggestion-api-regression.test.ts`, and `src/tests/marks.test.ts`
+- Tests run:
+  - `npx tsx src/tests/insert-accept-duplication-regression.test.ts` (pass)
+  - `npx tsx src/tests/editor-suggestion-api-regression.test.ts` (pass)
+  - `npx tsx src/tests/marks.test.ts` (pass)
+  - `npx tsx src/tests/suggestion-accept-canonical-row-live-fallback.test.ts` (pass)
+  - `npx tsx src/tests/marks-accept-live-insert-projection-hash-regression.test.ts` (pass)
+  - `npm run build` (pass)
+- Result: ready to merge. The resumed `095154` lane passed visible manual verification, and the only worthwhile later-worktree addition turned out to be the insert-accept duplication fix/test, which is now folded into this worktree.
+- Next hypothesis:
+  - merge this exact worktree state to `main`

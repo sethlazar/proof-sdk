@@ -5078,7 +5078,7 @@ class ProofEditorImpl implements ProofEditor {
 
   applyExternalMarks(
     marks: Record<string, StoredMark>,
-    options?: { pruneMissingSuggestions?: boolean },
+    options?: { pruneMissingSuggestions?: boolean; hydrateAuthoredAnchors?: boolean },
   ): void {
     if (!this.editor) return;
 
@@ -5089,6 +5089,7 @@ class ProofEditorImpl implements ProofEditor {
       applyRemoteMarks(view, marks, {
         hydrateAnchors: this.collabCanEdit,
         pruneMissingSuggestions: options?.pruneMissingSuggestions === true,
+        hydrateAuthoredAnchors: options?.hydrateAuthoredAnchors,
       });
     });
   }
@@ -5101,7 +5102,10 @@ class ProofEditorImpl implements ProofEditor {
     this.applyingCollabRemote = true;
     this.suppressMarksSync = true;
     try {
-      this.applyExternalMarks(this.lastReceivedServerMarks, { pruneMissingSuggestions: true });
+      this.applyExternalMarks(this.lastReceivedServerMarks, {
+        pruneMissingSuggestions: true,
+        hydrateAuthoredAnchors: false,
+      });
     } finally {
       this.suppressMarksSync = false;
       this.applyingCollabRemote = false;
@@ -5683,6 +5687,7 @@ class ProofEditorImpl implements ProofEditor {
     if (!view.hasFocus()) return;
 
     if (!this.isYjsChangeOriginTransaction(sourceTransaction)) return;
+    if (sourceTransaction?.getMeta?.(marksPluginKey) !== undefined) return;
 
     if ((Date.now() - this.lastLocalTypingAt) > this.remoteCursorStabilityWindowMs) return;
 
@@ -9727,6 +9732,7 @@ class ProofEditorImpl implements ProofEditor {
         applyRemoteMarks(view, serverMarks, {
           hydrateAnchors: this.collabCanEdit,
           pruneMissingSuggestions: true,
+          hydrateAuthoredAnchors: false,
         });
       }
       const markStillPendingAfterLocalReconcile = this.isSuggestionStillPendingInView(view, markId);
@@ -9809,6 +9815,7 @@ class ProofEditorImpl implements ProofEditor {
         applyRemoteMarks(view, serverMarks, {
           hydrateAnchors: this.collabCanEdit,
           pruneMissingSuggestions: true,
+          hydrateAuthoredAnchors: false,
         });
       }
       // As with persisted accepts, the server-side reject is already authoritative
@@ -9864,6 +9871,7 @@ class ProofEditorImpl implements ProofEditor {
             applyRemoteMarks(innerView, latestServerMarks!, {
               hydrateAnchors: this.collabCanEdit,
               pruneMissingSuggestions: true,
+              hydrateAuthoredAnchors: false,
             });
             const stats = getAuthorshipStats(innerView);
             this.notifyAuthorshipStatsUpdated(stats);
@@ -9912,6 +9920,7 @@ class ProofEditorImpl implements ProofEditor {
               applyRemoteMarks(innerView, latestServerMarks!, {
                 hydrateAnchors: this.collabCanEdit,
                 pruneMissingSuggestions: true,
+                hydrateAuthoredAnchors: false,
               });
             });
           }
