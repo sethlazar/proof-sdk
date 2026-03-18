@@ -395,6 +395,24 @@ async function runServerSourceTests(): Promise<void> {
     );
   });
 
+  await test('D1: homepage source exposes a browser-side new document button', async () => {
+    assertIncludes(
+      serverSource,
+      'id="new-document-btn"',
+      'homepage should render a visible New document button',
+    );
+    assertIncludes(
+      serverSource,
+      "fetch('/documents'",
+      'homepage create button should call the canonical document create route',
+    );
+    assertIncludes(
+      serverSource,
+      "window.location.href = destination;",
+      'homepage create button should redirect into the created document',
+    );
+  });
+
   await test('D1: landing template keeps mobile hero CTA visible', async () => {
     assertIncludes(
       homeTemplate,

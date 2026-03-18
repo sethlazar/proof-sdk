@@ -114,6 +114,15 @@ async function main(): Promise<void> {
       p { font-size: 1.05rem; line-height: 1.6; }
       code { background: #eaf2e6; padding: 0.2rem 0.35rem; border-radius: 4px; }
       a { color: #266854; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 24px 0 12px; }
+      .primary-btn {
+        appearance: none; border: none; border-radius: 999px; background: #17261d; color: #fff;
+        font: inherit; font-weight: 600; padding: 0.85rem 1.2rem; cursor: pointer;
+        box-shadow: 0 10px 24px rgba(23, 38, 29, 0.14);
+      }
+      .primary-btn:disabled { opacity: 0.7; cursor: progress; }
+      .status { min-height: 1.4em; font-size: 0.95rem; color: #4b5563; }
+      .subtle { color: #4b5563; }
     </style>
   </head>
   <body>
@@ -121,8 +130,58 @@ async function main(): Promise<void> {
       ${experimentalMarkup}
       <h1>Proof SDK</h1>
       <p>Open-source collaborative markdown editing with provenance tracking and an agent HTTP bridge.</p>
+      <div class="actions">
+        <button id="new-document-btn" class="primary-btn" type="button">New document</button>
+        <span id="create-status" class="status" role="status" aria-live="polite"></span>
+      </div>
+      <p class="subtle">The button creates a fresh shared doc and opens it with an editor token.</p>
       <p>Start with <code>POST /documents</code>, inspect <a href="/agent-docs">agent docs</a>, or read <a href="/.well-known/agent.json">discovery metadata</a>.</p>
     </main>
+    <script>
+      const newDocumentButton = document.getElementById('new-document-btn');
+      const createStatus = document.getElementById('create-status');
+
+      const setCreateStatus = (message) => {
+        if (createStatus) createStatus.textContent = message;
+      };
+
+      if (newDocumentButton instanceof HTMLButtonElement) {
+        newDocumentButton.addEventListener('click', async () => {
+          if (newDocumentButton.disabled) return;
+          newDocumentButton.disabled = true;
+          newDocumentButton.textContent = 'Creating...';
+          setCreateStatus('Creating a fresh document...');
+          try {
+            const response = await fetch('/documents', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Proof-Client-Version': '0.31.0',
+                'X-Proof-Client-Build': 'web-home',
+                'X-Proof-Client-Protocol': '3',
+              },
+              body: JSON.stringify({
+                markdown: '# Untitled\\n\\n',
+              }),
+            });
+            const payload = await response.json().catch(() => null);
+            if (!response.ok) {
+              throw new Error((payload && typeof payload.error === 'string' && payload.error) || 'Document creation failed');
+            }
+            const destination = payload?.tokenUrl || payload?.shareUrl || payload?.url;
+            if (typeof destination !== 'string' || destination.length === 0) {
+              throw new Error('Document create route did not return a URL');
+            }
+            window.location.href = destination;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Document creation failed';
+            setCreateStatus(message);
+            newDocumentButton.disabled = false;
+            newDocumentButton.textContent = 'New document';
+          }
+        });
+      }
+    </script>
   </body>
 </html>`);
   });
