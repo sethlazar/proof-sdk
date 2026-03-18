@@ -28,6 +28,11 @@ const DEFAULT_ALLOWED_CORS_ORIGINS = [
   'null',
 ];
 
+function readExperimentalLabel(): string | null {
+  const raw = (process.env.PROOF_EXPERIMENTAL_LABEL || '').trim();
+  return raw.length > 0 ? raw : null;
+}
+
 function parseAllowedCorsOrigins(): Set<string> {
   const configured = (process.env.PROOF_CORS_ALLOW_ORIGINS || '')
     .split(',')
@@ -90,6 +95,12 @@ async function main(): Promise<void> {
   });
 
   app.get('/', (_req, res) => {
+    const experimentalLabel = readExperimentalLabel();
+    const experimentalMarkup = experimentalLabel
+      ? `<div style="display:inline-flex;align-items:center;gap:8px;margin:0 0 1rem;">
+      <span style="display:inline-flex;align-items:center;padding:0.4rem 0.7rem;border-radius:999px;background:#efe7ff;color:#5b21b6;font-size:0.92rem;font-weight:600;">${experimentalLabel}</span>
+    </div>`
+      : '';
     res.type('html').send(`<!doctype html>
 <html lang="en">
   <head>
@@ -107,6 +118,7 @@ async function main(): Promise<void> {
   </head>
   <body>
     <main>
+      ${experimentalMarkup}
       <h1>Proof SDK</h1>
       <p>Open-source collaborative markdown editing with provenance tracking and an agent HTTP bridge.</p>
       <p>Start with <code>POST /documents</code>, inspect <a href="/agent-docs">agent docs</a>, or read <a href="/.well-known/agent.json">discovery metadata</a>.</p>

@@ -1048,7 +1048,9 @@ async function runRoutePayloadValidationTests(): Promise<void> {
 
     await test('D2: /d/:slug HTML response injects runtime comment UI default mode when configured', async () => {
       const previousMode = process.env.PROOF_COMMENT_UI_DEFAULT_MODE;
+      const previousExperimentalLabel = process.env.PROOF_EXPERIMENTAL_LABEL;
       process.env.PROOF_COMMENT_UI_DEFAULT_MODE = 'legacy';
+      process.env.PROOF_EXPERIMENTAL_LABEL = 'Mint Research experimental fork';
       try {
         const response = await get(baseUrl, `/d/${encodeURIComponent(slug)}?token=${encodeURIComponent(accessToken)}`, {
           Accept: 'text/html',
@@ -1064,9 +1066,16 @@ async function runRoutePayloadValidationTests(): Promise<void> {
           'window.__PROOF_CONFIG__.commentUiDefaultMode = "legacy";',
           'Expected runtime config to expose comment UI default mode'
         );
+        assertIncludes(
+          response.body || '',
+          'window.__PROOF_CONFIG__.experimentalLabel = "Mint Research experimental fork";',
+          'Expected runtime config to expose the experimental deployment label'
+        );
       } finally {
         if (previousMode === undefined) delete process.env.PROOF_COMMENT_UI_DEFAULT_MODE;
         else process.env.PROOF_COMMENT_UI_DEFAULT_MODE = previousMode;
+        if (previousExperimentalLabel === undefined) delete process.env.PROOF_EXPERIMENTAL_LABEL;
+        else process.env.PROOF_EXPERIMENTAL_LABEL = previousExperimentalLabel;
       }
     });
 

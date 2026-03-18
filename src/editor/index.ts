@@ -248,6 +248,7 @@ type ProofConfigWindow = Window & {
   __PROOF_CONFIG__?: {
     shareSlug?: string;
     trackChangesViewDefaultMode?: string;
+    experimentalLabel?: string;
   };
 };
 
@@ -334,6 +335,14 @@ function readTrackChangesViewModeRollback(): SuggestionDisplayMode | null {
   } catch {
     return null;
   }
+}
+
+function readExperimentalLabel(): string | null {
+  if (typeof window === 'undefined') return null;
+  const raw = (window as ProofConfigWindow).__PROOF_CONFIG__?.experimentalLabel;
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function getInitialTrackChangesViewMode(): SuggestionDisplayMode {
@@ -3781,12 +3790,29 @@ class ProofEditorImpl implements ProofEditor {
     this.closePresenceMenu();
     this.closeAgentMenu();
 
+    const experimentalLabel = readExperimentalLabel();
     const wordmark = document.createElement('a');
     wordmark.textContent = 'Proof';
-    wordmark.href = 'https://proof.com';
-    wordmark.target = '_blank';
-    wordmark.rel = 'noopener';
+    if (experimentalLabel) {
+      wordmark.href = '/';
+      wordmark.target = '_self';
+      wordmark.rel = '';
+    } else {
+      wordmark.href = 'https://proof.com';
+      wordmark.target = '_blank';
+      wordmark.rel = 'noopener';
+    }
     wordmark.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;min-height:44px;min-width:44px;padding:0 8px;border-radius:10px;font-weight:600;color:#333;font-size:13px;letter-spacing:-0.2px;flex-shrink:0;text-decoration:none;';
+
+    const experimentalBadge = document.createElement('span');
+    experimentalBadge.className = 'share-pill-experimental-badge';
+    experimentalBadge.textContent = experimentalLabel ?? '';
+    experimentalBadge.style.cssText = `
+      display:${experimentalLabel ? 'inline-flex' : 'none'};align-items:center;justify-content:center;
+      min-height:32px;padding:0 10px;border-radius:999px;background:rgba(91,33,182,0.12);
+      color:#6d28d9;border:1px solid rgba(109,40,217,0.18);font-size:11px;font-weight:700;
+      letter-spacing:0.01em;white-space:nowrap;flex-shrink:0;
+    `;
 
     const separator = document.createElement('span');
     separator.className = 'share-pill-sep';
@@ -3827,7 +3853,7 @@ class ProofEditorImpl implements ProofEditor {
 
     const shareBtn = this.createShareMenuButton();
 
-    banner.replaceChildren(wordmark, separator, title, historyControls, trackChangesToggle, syncStatusSep, syncStatusInline, avatars, agentSlot, shareBtn);
+    banner.replaceChildren(wordmark, experimentalBadge, separator, title, historyControls, trackChangesToggle, syncStatusSep, syncStatusInline, avatars, agentSlot, shareBtn);
     this.scheduleBannerLayoutUpdate();
   }
 

@@ -172,13 +172,20 @@ function applyLocalNoCacheHeaders(res: Response): void {
   res.setHeader('Expires', '0');
 }
 
+function readExperimentalLabel(): string | null {
+  const raw = (process.env.PROOF_EXPERIMENTAL_LABEL || '').trim();
+  return raw.length > 0 ? raw : null;
+}
+
 function buildShareRuntimeConfigScript(slug: string, shareToken?: string | null): string {
   const commentUiDefaultMode = normalizeCommentUiMode(process.env.PROOF_COMMENT_UI_DEFAULT_MODE);
+  const experimentalLabel = readExperimentalLabel();
   const configLines = [
     shareToken ? `window.__PROOF_CONFIG__.shareSlug = ${JSON.stringify(slug)};` : '',
     shareToken ? `window.__PROOF_CONFIG__.shareToken = ${JSON.stringify(shareToken)};` : '',
     'window.__PROOF_CONFIG__.trackChangesViewDefaultMode = "simple";',
     commentUiDefaultMode ? `window.__PROOF_CONFIG__.commentUiDefaultMode = ${JSON.stringify(commentUiDefaultMode)};` : '',
+    experimentalLabel ? `window.__PROOF_CONFIG__.experimentalLabel = ${JSON.stringify(experimentalLabel)};` : '',
   ].filter(Boolean);
   if (configLines.length === 0) return '';
   return `<script>

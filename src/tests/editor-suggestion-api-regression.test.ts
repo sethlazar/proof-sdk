@@ -148,7 +148,7 @@ function run(): void {
       && editorSource.includes('private createHistoryControls(): HTMLElement {')
       && editorSource.includes("const undoButton = makeButton('↶', 'Undo (Cmd/Ctrl+Z)', () => this.undo());")
       && editorSource.includes("const redoButton = makeButton('↷', 'Redo (Shift+Cmd/Ctrl+Z)', () => this.redo());")
-      && editorSource.includes('banner.replaceChildren(wordmark, separator, title, historyControls, trackChangesToggle')
+      && editorSource.includes('banner.replaceChildren(wordmark, experimentalBadge, separator, title, historyControls, trackChangesToggle')
       && editorSource.includes("container.className = 'share-pill-history-controls';")
       && editorSource.includes("button.className = 'share-pill-history-btn';"),
     'Expected the share banner to expose undo/redo controls backed by a user-visible snapshot stack in share mode, with word-level typing coalescing and command fallbacks elsewhere',
