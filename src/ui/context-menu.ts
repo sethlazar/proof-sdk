@@ -452,6 +452,7 @@ function getShortcutHelpEntries(): ShortcutHelpEntry[] {
   return [
     { label: 'Ask Proof', binding: proofKeybindingConfig.invokeAgent },
     { label: 'Add comment for Proof', binding: proofKeybindingConfig.addProofComment },
+    { label: 'Select document', binding: proofKeybindingConfig.selectAllDocument },
     { label: 'Undo', binding: proofKeybindingConfig.undo },
     { label: 'Redo', binding: proofKeybindingConfig.redo },
     { label: 'Next comment', binding: proofKeybindingConfig.nextComment },

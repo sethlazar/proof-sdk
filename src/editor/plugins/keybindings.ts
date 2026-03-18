@@ -7,7 +7,7 @@
  */
 
 import { $prose } from '@milkdown/kit/utils';
-import { Plugin, PluginKey, type EditorState } from '@milkdown/kit/prose/state';
+import { AllSelection, Plugin, PluginKey, type EditorState } from '@milkdown/kit/prose/state';
 import type { EditorView } from '@milkdown/kit/prose/view';
 import { keymap } from '@milkdown/kit/prose/keymap';
 import {
@@ -400,6 +400,19 @@ function toggleSuggestionsCommand(
   return true;
 }
 
+function selectAllDocumentCommand(
+  state: EditorState,
+  _dispatch: ((tr: unknown) => void) | undefined,
+  view: EditorView | undefined,
+): boolean {
+  if (!view) return false;
+  const selection = new AllSelection(state.doc);
+  const tr = state.tr.setSelection(selection).scrollIntoView();
+  view.dispatch(tr);
+  view.focus();
+  return true;
+}
+
 // ============================================================================
 // Quick Actions
 // ============================================================================
@@ -446,6 +459,7 @@ export function executeQuickAction(view: EditorView, action: QuickAction): void 
 const agentKeymap = keymap({
   [proofKeybindingConfig.invokeAgent]: invokeAgentCommand,
   [proofKeybindingConfig.addProofComment]: addProofCommentCommand,
+  [proofKeybindingConfig.selectAllDocument]: selectAllDocumentCommand,
   [proofKeybindingConfig.undo]: undoCommand,
   [proofKeybindingConfig.redo]: redoCommand,
   [proofKeybindingConfig.nextComment]: navigateNextComment,

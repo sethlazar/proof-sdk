@@ -8,6 +8,7 @@
 export type ProofKeybindingConfig = {
   invokeAgent: string;
   addProofComment: string;
+  selectAllDocument: string;
   undo: string;
   redo: string;
   nextComment: string;
@@ -23,6 +24,7 @@ export type ProofKeybindingConfig = {
 export const proofKeybindingConfig: Readonly<ProofKeybindingConfig> = {
   invokeAgent: 'Mod-Shift-p',
   addProofComment: 'Mod-Shift-k',
+  selectAllDocument: 'Mod-a',
   undo: 'Mod-z',
   redo: 'Mod-Shift-z',
   nextComment: 'Mod-]',

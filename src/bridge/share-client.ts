@@ -93,6 +93,12 @@ export interface ShareMarkMutationResponse {
   marks?: Record<string, unknown>;
 }
 
+export interface ShareDocumentUpdateResponse {
+  success: boolean;
+  shareState?: ShareState;
+  updatedAt?: string;
+}
+
 type ShareMutationBase = {
   baseRevision?: number;
   baseUpdatedAt?: string;
@@ -378,6 +384,52 @@ export class ShareClient {
     return {
       success: payload.success === true,
       title: typeof payload.title === 'string' ? payload.title : null,
+      updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : undefined,
+    };
+  }
+
+  async updateDocument(
+    document: {
+      markdown?: string;
+      marks?: Record<string, unknown>;
+      title?: string;
+      actor?: string;
+      clientId?: string;
+    },
+    options?: { token?: string },
+  ): Promise<ShareDocumentUpdateResponse | ShareRequestError | null> {
+    if (!this.slug) return null;
+
+    const body: Record<string, unknown> = {};
+    if (typeof document.markdown === 'string') body.markdown = document.markdown;
+    if (document.marks && typeof document.marks === 'object' && !Array.isArray(document.marks)) {
+      body.marks = document.marks;
+    }
+    if (typeof document.title === 'string') body.title = document.title;
+    if (typeof document.actor === 'string' && document.actor.trim().length > 0) {
+      body.actor = document.actor.trim();
+    }
+    if (typeof document.clientId === 'string' && document.clientId.trim().length > 0) {
+      body.clientId = document.clientId.trim();
+    }
+
+    const response = await fetch(`${this.getApiBase()}/documents/${this.slug}`, {
+      method: 'PUT',
+      headers: {
+        ...this.getShareAuthHeaders(options?.token),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) return this.parseRequestError(response);
+    const payload = await response.json() as {
+      success?: boolean;
+      shareState?: string;
+      updatedAt?: string;
+    };
+    return {
+      success: payload.success === true,
+      shareState: typeof payload.shareState === 'string' ? payload.shareState as ShareState : undefined,
       updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : undefined,
     };
   }

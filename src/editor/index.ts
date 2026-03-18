@@ -186,6 +186,7 @@ import {
 import { proofMarkHandler } from '../formats/remark-proof-marks';
 import { remarkProofMarksPlugin } from './schema/remark-proof-marks-plugin';
 import { getCurrentActor, setCurrentActor as setCurrentActorValue, normalizeActor } from './actor';
+import { proofKeybindingConfig } from './keybindings-config';
 import { keybindingsPlugin, setShowAgentInputCallback, type AgentInputContext } from './plugins/keybindings';
 import { tableKeyboardPlugin } from './plugins/table-keyboard';
 import { showAgentInputDialog } from '../ui/agent-input-dialog';
@@ -343,6 +344,48 @@ function readExperimentalLabel(): string | null {
   if (typeof raw !== 'string') return null;
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+type ShortcutHelpEntry = {
+  label: string;
+  binding: string;
+};
+
+function isMacPlatform(): boolean {
+  if (typeof navigator === 'undefined') return true;
+  return /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+}
+
+function formatShortcutBinding(binding: string): string {
+  const isMac = isMacPlatform();
+  return binding
+    .split('-')
+    .map((token) => {
+      if (token === 'Mod') return isMac ? 'Cmd' : 'Ctrl';
+      if (token === 'Alt') return isMac ? 'Option' : 'Alt';
+      if (token === 'Shift') return 'Shift';
+      if (token.length === 1) return token.toUpperCase();
+      return token;
+    })
+    .join('+');
+}
+
+function getShortcutHelpEntries(): ShortcutHelpEntry[] {
+  return [
+    { label: 'Ask Proof', binding: proofKeybindingConfig.invokeAgent },
+    { label: 'Add comment for Proof', binding: proofKeybindingConfig.addProofComment },
+    { label: 'Select document', binding: proofKeybindingConfig.selectAllDocument },
+    { label: 'Undo', binding: proofKeybindingConfig.undo },
+    { label: 'Redo', binding: proofKeybindingConfig.redo },
+    { label: 'Next comment', binding: proofKeybindingConfig.nextComment },
+    { label: 'Previous comment', binding: proofKeybindingConfig.prevComment },
+    { label: 'Next change', binding: proofKeybindingConfig.nextSuggestion },
+    { label: 'Previous change', binding: proofKeybindingConfig.prevSuggestion },
+    { label: 'Accept change', binding: proofKeybindingConfig.acceptSuggestionAndNext },
+    { label: 'Reject change', binding: proofKeybindingConfig.rejectSuggestionAndNext },
+    { label: 'Toggle Track Changes', binding: proofKeybindingConfig.toggleTrackChanges },
+    { label: 'Resolve comment', binding: proofKeybindingConfig.resolveComment },
+  ];
 }
 
 function getInitialTrackChangesViewMode(): SuggestionDisplayMode {
@@ -888,6 +931,7 @@ export interface ProofEditor {
   getContent(): string;
   looksLikeMarkdown(content: string): boolean;
   getMarkdownSnapshot(): { content: string } | null;
+  saveVisibleStateToRecord(): Promise<boolean>;
   getFullState(): EditorFullState | null;
   setHeatMapMode(mode: string): void;
   setTheme(theme: string): void;
@@ -1252,16 +1296,23 @@ class ProofEditorImpl implements ProofEditor {
   private shareBannerTrackChangesButtonEl: HTMLButtonElement | null = null;
   private shareBannerUndoButtonEl: HTMLButtonElement | null = null;
   private shareBannerRedoButtonEl: HTMLButtonElement | null = null;
+  private shareBannerSaveButtonEl: HTMLButtonElement | null = null;
+  private shareBannerShortcutsButtonEl: HTMLButtonElement | null = null;
   private shareBannerAvatarsEl: HTMLElement | null = null;
   private shareBannerAgentSlotEl: HTMLElement | null = null;
   private shareBannerSyncDotEl: HTMLElement | null = null;
   private shareBannerSyncLabelEl: HTMLElement | null = null;
+  private shareShortcutsOverlayEl: HTMLElement | null = null;
+  private shareShortcutsOverlayCleanup: (() => void) | null = null;
   private shareHumanPresenceSignature: string = '';
   private shareBannerTitleEditing: boolean = false;
   private shareTitlePersistSeq: number = 0;
   private shareLastStatusLabel: string = '';
   private shareStatusTextVisibleUntilMs: number = 0;
   private shareStatusHideTimer: ReturnType<typeof setTimeout> | null = null;
+  private shareSaveInFlight: boolean = false;
+  private shareSaveLastSuccessAt: number = 0;
+  private shareSaveFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   private shareWsUnsubscribe: (() => void) | null = null;
   private shareEventPollTimer: ReturnType<typeof setTimeout> | null = null;
   private shareEventPollInFlight: boolean = false;
@@ -3618,6 +3669,7 @@ class ProofEditorImpl implements ProofEditor {
       this.shareBannerSyncLabelEl.style.visibility = shouldShowText ? 'visible' : 'hidden';
       this.shareBannerSyncLabelEl.setAttribute('aria-hidden', shouldShowText ? 'false' : 'true');
     }
+    this.updateShareBannerSaveDisplay();
   }
 
   private canToggleTrackChanges(): boolean {
@@ -3658,6 +3710,7 @@ class ProofEditorImpl implements ProofEditor {
 
     applyState(editButton, !enabled, 'Make direct edits (Cmd/Ctrl+Shift+E)');
     applyState(trackChangesButton, enabled, 'Record edits as tracked changes (Cmd/Ctrl+Shift+E)');
+    this.updateShareBannerSaveDisplay();
   }
 
   private updateShareBannerHistoryDisplay(): void {
@@ -3761,6 +3814,200 @@ class ProofEditorImpl implements ProofEditor {
     return container;
   }
 
+  private canManuallySaveVisibleState(): boolean {
+    return this.isShareMode
+      && Boolean(this.editor)
+      && !this.isReadOnly
+      && this.reviewLockCount === 0
+      && this.collabCanEdit;
+  }
+
+  private shouldShowShareSaveButton(): boolean {
+    if (!this.canManuallySaveVisibleState()) return false;
+    if (this.shareSaveInFlight) return true;
+    if ((Date.now() - this.shareSaveLastSuccessAt) < 2200) return true;
+    return this.collabConnectionStatus !== 'connected'
+      || this.collabUnsyncedChanges > 0
+      || this.collabPendingLocalUpdates > 0;
+  }
+
+  private scheduleShareSaveFeedbackRefresh(): void {
+    if (this.shareSaveFeedbackTimer) {
+      clearTimeout(this.shareSaveFeedbackTimer);
+      this.shareSaveFeedbackTimer = null;
+    }
+    const remainingMs = 2200 - (Date.now() - this.shareSaveLastSuccessAt);
+    if (remainingMs <= 0) {
+      this.updateShareBannerSaveDisplay();
+      return;
+    }
+    this.shareSaveFeedbackTimer = setTimeout(() => {
+      this.shareSaveFeedbackTimer = null;
+      this.updateShareBannerSaveDisplay();
+    }, remainingMs + 32);
+  }
+
+  private updateShareBannerSaveDisplay(): void {
+    const saveButton = this.shareBannerSaveButtonEl;
+    if (!saveButton) return;
+
+    const canSave = this.canManuallySaveVisibleState();
+    const shouldShow = this.shouldShowShareSaveButton();
+    const recentlySaved = (Date.now() - this.shareSaveLastSuccessAt) < 2200;
+    const label = this.shareSaveInFlight ? 'Saving…' : recentlySaved ? 'Saved copy' : 'Save';
+    const title = recentlySaved
+      ? 'The visible editor state was pushed to the shared record.'
+      : 'Push the currently visible document state into the shared version of record.';
+    const nextState = `${shouldShow}:${canSave}:${label}`;
+    if (saveButton.dataset.saveState === nextState) return;
+
+    saveButton.style.display = shouldShow ? 'inline-flex' : 'none';
+    saveButton.disabled = !canSave || this.shareSaveInFlight;
+    saveButton.textContent = label;
+    saveButton.title = canSave ? title : 'Save is only available while this shared document is editable.';
+    saveButton.style.opacity = canSave ? '1' : '0.5';
+    saveButton.style.cursor = canSave && !this.shareSaveInFlight ? 'pointer' : 'default';
+    saveButton.dataset.saveState = nextState;
+  }
+
+  private closeShareShortcutsOverlay(): void {
+    if (this.shareShortcutsOverlayCleanup) {
+      this.shareShortcutsOverlayCleanup();
+      this.shareShortcutsOverlayCleanup = null;
+    }
+    if (this.shareShortcutsOverlayEl) {
+      this.shareShortcutsOverlayEl.remove();
+      this.shareShortcutsOverlayEl = null;
+    }
+    this.shareBannerShortcutsButtonEl?.setAttribute('aria-expanded', 'false');
+  }
+
+  private toggleShareShortcutsOverlay(): void {
+    if (this.shareShortcutsOverlayEl) {
+      this.closeShareShortcutsOverlay();
+      return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+      position: fixed;
+      inset: 0;
+      z-index: 10020;
+      background: rgba(15, 23, 42, 0.18);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    `;
+
+    const panel = document.createElement('div');
+    panel.style.cssText = `
+      width: min(420px, calc(100vw - 32px));
+      max-height: min(80vh, 620px);
+      overflow: auto;
+      background: #fff;
+      border: 1px solid rgba(17,24,39,0.1);
+      border-radius: 16px;
+      box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+      padding: 16px 16px 14px;
+      color: #111827;
+    `;
+
+    const entries = getShortcutHelpEntries();
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;">
+        <div>
+          <div style="font-size:14px;font-weight:700;letter-spacing:0.01em;">Keyboard shortcuts</div>
+          <div style="font-size:12px;color:#6b7280;margin-top:2px;">Editor shortcuts available in this document</div>
+        </div>
+        <button type="button" aria-label="Close keyboard shortcuts" style="border:none;background:transparent;color:#6b7280;font-size:22px;line-height:1;cursor:pointer;padding:2px 4px;">×</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        ${entries.map((entry) => `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:6px 2px;border-bottom:1px solid rgba(229,231,235,0.8);">
+            <span style="font-size:13px;color:#1f2937;">${entry.label}</span>
+            <span style="font-size:12px;font-weight:600;color:#4b5563;white-space:nowrap;">${formatShortcutBinding(entry.binding)}</span>
+          </div>
+        `).join('')}
+      </div>
+    `;
+
+    const close = (): void => {
+      this.closeShareShortcutsOverlay();
+    };
+    const closeButton = panel.querySelector('button') as HTMLButtonElement | null;
+    closeButton?.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    });
+
+    overlay.addEventListener('mousedown', (event) => {
+      if (event.target === overlay) {
+        event.preventDefault();
+        close();
+      }
+    });
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    this.shareShortcutsOverlayCleanup = () => {
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+    this.shareShortcutsOverlayEl = overlay;
+    this.shareBannerShortcutsButtonEl?.setAttribute('aria-expanded', 'true');
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+    closeButton?.focus();
+  }
+
+  private createShareUtilityControls(): HTMLElement {
+    const container = document.createElement('div');
+    container.className = 'share-pill-utility-controls';
+    container.style.cssText = 'display:inline-flex;align-items:center;gap:6px;flex-shrink:0;';
+
+    const makeButton = (label: string, title: string): HTMLButtonElement => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'share-pill-utility-btn';
+      button.textContent = label;
+      button.title = title;
+      button.style.cssText = `
+        min-height:36px;padding:0 12px;border-radius:999px;border:1px solid rgba(17,24,39,0.08);
+        background:#fff;color:#374151;font-size:12px;font-weight:600;font-family:inherit;
+        white-space:nowrap;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
+        box-shadow:0 1px 2px rgba(17,24,39,0.06);
+      `;
+      return button;
+    };
+
+    const shortcutsButton = makeButton('Keys', 'Show keyboard shortcuts');
+    shortcutsButton.setAttribute('aria-haspopup', 'dialog');
+    shortcutsButton.setAttribute('aria-expanded', 'false');
+    shortcutsButton.onclick = () => {
+      this.triggerHaptic('selection');
+      this.toggleShareShortcutsOverlay();
+    };
+    this.shareBannerShortcutsButtonEl = shortcutsButton;
+
+    const saveButton = makeButton('Save', 'Push the visible editor state into the shared version of record');
+    saveButton.onclick = () => {
+      if (saveButton.disabled) return;
+      this.triggerHaptic('selection');
+      void this.saveVisibleStateToRecord();
+    };
+    this.shareBannerSaveButtonEl = saveButton;
+
+    container.append(shortcutsButton, saveButton);
+    this.updateShareBannerSaveDisplay();
+    return container;
+  }
+
   private renderShareBannerContent(banner: HTMLElement, otherViewerCount: number): void {
     this.ensureShareBannerResponsiveCSS();
     this.shareOtherViewerCount = otherViewerCount;
@@ -3770,6 +4017,8 @@ class ProofEditorImpl implements ProofEditor {
       && this.shareBannerTrackChangesButtonEl
       && this.shareBannerUndoButtonEl
       && this.shareBannerRedoButtonEl
+      && this.shareBannerSaveButtonEl
+      && this.shareBannerShortcutsButtonEl
       && this.shareBannerAvatarsEl
       && this.shareBannerAgentSlotEl
       && this.shareBannerSyncDotEl
@@ -3782,6 +4031,7 @@ class ProofEditorImpl implements ProofEditor {
       this.updateShareBannerSyncDisplay();
       this.updateShareBannerHistoryDisplay();
       this.updateShareBannerTrackChangesDisplay();
+      this.updateShareBannerSaveDisplay();
       this.scheduleBannerLayoutUpdate();
       return;
     }
@@ -3827,6 +4077,7 @@ class ProofEditorImpl implements ProofEditor {
 
     const historyControls = this.createHistoryControls();
     const trackChangesToggle = this.createTrackChangesModeToggle();
+    const utilityControls = this.createShareUtilityControls();
 
     const avatars = document.createElement('span');
     this.shareBannerAvatarsEl = avatars;
@@ -3853,7 +4104,7 @@ class ProofEditorImpl implements ProofEditor {
 
     const shareBtn = this.createShareMenuButton();
 
-    banner.replaceChildren(wordmark, experimentalBadge, separator, title, historyControls, trackChangesToggle, syncStatusSep, syncStatusInline, avatars, agentSlot, shareBtn);
+    banner.replaceChildren(wordmark, experimentalBadge, separator, title, historyControls, trackChangesToggle, syncStatusSep, syncStatusInline, utilityControls, avatars, agentSlot, shareBtn);
     this.scheduleBannerLayoutUpdate();
   }
 
@@ -5099,12 +5350,15 @@ class ProofEditorImpl implements ProofEditor {
     this.closeShareMenu();
     this.closePresenceMenu();
     this.closeAgentMenu();
+    this.closeShareShortcutsOverlay();
     this.shareBannerTitleEditing = false;
     this.shareBannerTitleEl = null;
     this.shareBannerEditModeButtonEl = null;
     this.shareBannerTrackChangesButtonEl = null;
     this.shareBannerUndoButtonEl = null;
     this.shareBannerRedoButtonEl = null;
+    this.shareBannerSaveButtonEl = null;
+    this.shareBannerShortcutsButtonEl = null;
     this.shareBannerAvatarsEl = null;
     this.shareBannerAgentSlotEl = null;
     this.shareBannerSyncDotEl = null;
@@ -5117,6 +5371,10 @@ class ProofEditorImpl implements ProofEditor {
     if (this.shareDocumentUpdatedTimer) {
       clearTimeout(this.shareDocumentUpdatedTimer);
       this.shareDocumentUpdatedTimer = null;
+    }
+    if (this.shareSaveFeedbackTimer) {
+      clearTimeout(this.shareSaveFeedbackTimer);
+      this.shareSaveFeedbackTimer = null;
     }
     const existing = document.getElementById('share-banner');
     if (!existing) return;
@@ -6432,6 +6690,73 @@ class ProofEditorImpl implements ProofEditor {
     });
 
     return snapshot;
+  }
+
+  async saveVisibleStateToRecord(): Promise<boolean> {
+    if (!this.editor || !this.isShareMode) return false;
+    if (!this.canManuallySaveVisibleState()) {
+      this.showErrorBanner('This shared document is not currently editable, so there is nothing local to rescue.');
+      return false;
+    }
+    if (this.shareSaveInFlight) return false;
+
+    let markdown: string | null = null;
+    let marks: Record<string, StoredMark> = {};
+    this.editor.action((ctx) => {
+      const view = ctx.get(editorViewCtx);
+      const serializer = ctx.get(serializerCtx);
+      markdown = this.normalizeMarkdownForRuntime(serializer(view.state.doc));
+      marks = getMarkMetadataForDisk(view.state);
+    });
+
+    if (!markdown || markdown.trim().length === 0) {
+      this.showErrorBanner('There is no visible document content to save yet.');
+      return false;
+    }
+
+    this.shareSaveInFlight = true;
+    this.updateShareBannerSaveDisplay();
+    this.clearErrorBanner();
+
+    try {
+      const result = await shareClient.updateDocument({
+        markdown,
+        marks,
+        actor: getCurrentActor(),
+        clientId: shareClient.getClientId() ?? undefined,
+      });
+      if (!result) {
+        this.showErrorBanner('Save failed before the shared document API returned a response.', {
+          retryLabel: 'Save again',
+          onRetry: () => { void this.saveVisibleStateToRecord(); },
+        });
+        return false;
+      }
+      if (this.isShareRequestError(result)) {
+        this.showErrorBanner(result.error.message || 'Unable to save the visible document state.', {
+          retryLabel: 'Save again',
+          onRetry: () => { void this.saveVisibleStateToRecord(); },
+        });
+        return false;
+      }
+
+      this.lastMarkdown = markdown;
+      this.shareSaveLastSuccessAt = Date.now();
+      this.scheduleShareSaveFeedbackRefresh();
+      if (this.collabEnabled) {
+        void this.refreshCollabSessionAndReconnect(true);
+      }
+      return true;
+    } catch (error) {
+      this.showErrorBanner(this.getErrorMessage(error), {
+        retryLabel: 'Save again',
+        onRetry: () => { void this.saveVisibleStateToRecord(); },
+      });
+      return false;
+    } finally {
+      this.shareSaveInFlight = false;
+      this.updateShareBannerSaveDisplay();
+    }
   }
 
   /**

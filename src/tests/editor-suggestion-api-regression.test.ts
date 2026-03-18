@@ -97,12 +97,17 @@ function run(): void {
   assert(
     keybindingConfigSource.includes("acceptSuggestionAndNext: 'Mod-Alt-a'")
       && keybindingConfigSource.includes("rejectSuggestionAndNext: 'Mod-Alt-r'")
+      && keybindingConfigSource.includes("selectAllDocument: 'Mod-a'")
       && keybindingConfigSource.includes("undo: 'Mod-z'")
       && keybindingConfigSource.includes("redo: 'Mod-Shift-z'")
       && keybindingConfigSource.includes("nextSuggestion: 'Mod-Alt-]'")
       && keybindingConfigSource.includes("prevSuggestion: 'Mod-Alt-['")
       && keybindingConfigSource.includes("toggleTrackChanges: 'Mod-Shift-e'")
       && keybindingsSource.includes("import { proofKeybindingConfig } from '../keybindings-config';")
+      && keybindingsSource.includes("import { AllSelection, Plugin, PluginKey, type EditorState } from '@milkdown/kit/prose/state';")
+      && keybindingsSource.includes('function selectAllDocumentCommand(')
+      && keybindingsSource.includes('const selection = new AllSelection(state.doc);')
+      && keybindingsSource.includes('[proofKeybindingConfig.selectAllDocument]: selectAllDocumentCommand')
       && keybindingsSource.includes('[proofKeybindingConfig.undo]: undoCommand')
       && keybindingsSource.includes('[proofKeybindingConfig.redo]: redoCommand')
       && keybindingsSource.includes('if (!proof?.undo) return false;')
@@ -115,13 +120,26 @@ function run(): void {
       && keybindingsSource.includes('const nextSuggestionId = getSuggestionReviewFollowupId(state, activeId);')
       && keybindingsSource.includes("persistSuggestionReviewAndAdvance(activeId, nextSuggestionId, 'accept');")
       && keybindingsSource.includes("persistSuggestionReviewAndAdvance(activeId, nextSuggestionId, 'reject');"),
-    'Expected dedicated keyboard shortcuts to live in a shared config file, including native undo/redo bindings and advance review after accepting or rejecting suggestions',
+    'Expected dedicated keyboard shortcuts to live in a shared config file, including scoped select-all, native undo/redo bindings, and advance review after accepting or rejecting suggestions',
   );
   assert(
     editorSource.includes('private createTrackChangesModeToggle(): HTMLElement {')
       && editorSource.includes("makeSegment('Edit'")
       && editorSource.includes("makeSegment('Track Changes'"),
     'Expected the share banner to expose a visible Edit / Track Changes toggle',
+  );
+  assert(
+    editorSource.includes('async saveVisibleStateToRecord(): Promise<boolean> {')
+      && editorSource.includes("const shortcutsButton = makeButton('Keys', 'Show keyboard shortcuts');")
+      && editorSource.includes("const saveButton = makeButton('Save', 'Push the visible editor state into the shared version of record');")
+      && editorSource.includes('void this.saveVisibleStateToRecord();')
+      && editorSource.includes('this.toggleShareShortcutsOverlay();')
+      && editorSource.includes('this.shareSaveLastSuccessAt = Date.now();')
+      && shareClientSource.includes('export interface ShareDocumentUpdateResponse {')
+      && shareClientSource.includes('async updateDocument(')
+      && shareClientSource.includes("method: 'PUT'")
+      && shareClientSource.includes("fetch(`${this.getApiBase()}/documents/${this.slug}`, {"),
+    'Expected shared docs to expose a visible keyboard-shortcuts button plus an explicit save-to-record action that serializes the current editor state and pushes it through the canonical PUT /documents route',
   );
   assert(
     editorSource.includes('undo(): boolean {')
@@ -321,6 +339,7 @@ function run(): void {
       && contextMenuSource.includes('data-action="review-suggestion"')
       && contextMenuSource.includes('data-action="show-shortcuts"')
       && contextMenuSource.includes("Keyboard shortcuts")
+      && contextMenuSource.includes("{ label: 'Select document', binding: proofKeybindingConfig.selectAllDocument },")
       && contextMenuSource.includes('showShortcutsPopover();')
       && contextMenuSource.includes('proofKeybindingConfig.acceptSuggestionAndNext')
       && contextMenuSource.includes('await proof.markAcceptPersisted(markId);')
