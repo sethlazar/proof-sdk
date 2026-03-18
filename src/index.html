@@ -41,6 +41,7 @@
       --font-size: 16px;
       --line-height: 1.6;
       --content-max-width: none;
+      --proof-review-gutter-width: 0px;
       --heading-weight: bold;
       --heading-align: left;
       --text-align: left;
@@ -107,15 +108,16 @@
 
     #editor {
       background: var(--bg-color);
-      padding: 60px 40px 40px;
+      padding: 60px calc(40px + var(--proof-review-gutter-width)) 40px 40px;
       padding-left: calc(var(--provenance-bar-width) + 20px);
       min-height: 100vh;
       outline: none;
+      transition: padding-right 160ms ease;
     }
 
     /* Share mode: comfortable reading/writing width */
     body[data-share-mode="true"] #editor {
-      padding: 80px 80px 40px;
+      padding: 80px calc(80px + var(--proof-review-gutter-width)) 40px 80px;
       padding-left: calc(var(--provenance-bar-width) + 80px);
     }
 

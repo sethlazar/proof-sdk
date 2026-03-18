@@ -51,6 +51,24 @@ function run(): void {
       && editorSource.includes('applyTrackChangesViewModeToDom(view, nextMode);'),
     'Expected track-changes mode changes to keep the editor DOM data attribute in sync for view-specific styling',
   );
+  const initialTrackChangesModeBlock = sliceBetween(editorSource, 'function getInitialTrackChangesViewMode(): SuggestionDisplayMode {', '\n}\n\nfunction persistTrackChangesViewMode');
+  assert(
+    editorSource.includes("const TRACK_CHANGES_VIEW_SIMPLE_ROLLBACK_KEY = 'proof.trackChangesView.simpleRollback20260318';")
+      && editorSource.includes('function readTrackChangesViewModeRollback(): SuggestionDisplayMode | null {')
+      && editorSource.includes('if (!config?.shareSlug) return null;')
+      && editorSource.includes("if (defaultMode !== 'simple') return null;")
+      && editorSource.includes("if (stored !== 'all') return null;")
+      && editorSource.includes("window.localStorage.setItem(TRACK_CHANGES_VIEW_STORAGE_KEY, 'simple');")
+      && initialTrackChangesModeBlock.includes('?? readTrackChangesViewModeRollback()')
+      && initialTrackChangesModeBlock.includes('?? readTrackChangesViewModeFromStorage()'),
+    'Expected shared docs to roll back stale cached all-markup preferences once so refreshes return to the lighter simple track-changes view',
+  );
+  const enableSuggestionsBlock = sliceBetween(editorSource, '  enableSuggestions(): void {', '\n  /**\n   * Disable suggestion mode');
+  assert(
+    enableSuggestionsBlock.includes("if (currentMode === 'all') {")
+      && enableSuggestionsBlock.includes("this.setTrackChangesViewMode('simple');"),
+    'Expected enabling track changes to keep the lighter simple review markup active instead of switching into the heavier inline all-markup mode',
+  );
   assert(
     editorHtmlSource.includes('.ProseMirror[data-track-changes-view="simple"] span[data-proof="suggestion"] {')
       && editorHtmlSource.includes('background: transparent !important;')
@@ -58,6 +76,12 @@ function run(): void {
       && editorHtmlSource.includes('.ProseMirror[data-track-changes-view="simple"] .mark-replace-insert.mark-simple {')
       && editorHtmlSource.includes('border-bottom: none !important;'),
     'Expected simple markup to neutralize the legacy inline suggestion wrapper styling and remove replacement highlight blocks',
+  );
+  assert(
+    editorHtmlSource.includes('--proof-review-gutter-width: 0px;')
+      && editorHtmlSource.includes('padding: 60px calc(40px + var(--proof-review-gutter-width)) 40px 40px;')
+      && editorHtmlSource.includes('padding: 80px calc(80px + var(--proof-review-gutter-width)) 40px 80px;'),
+    'Expected the editor layout to reserve a desktop review gutter instead of letting the review rail and side panel sit on top of document text',
   );
   assert(
     marksSource.includes("change_indicator: 'display:inline-flex;width:7px;height:7px;margin:0 2px;")
@@ -158,7 +182,14 @@ function run(): void {
       && popoverSource.includes("source?: 'direct' | 'hover'")
       && popoverSource.includes("appendDetailRow('Original text', original")
       && popoverSource.includes("private renderSuggestionRail(): void {")
+      && popoverSource.includes('private shouldReserveDesktopReviewGutter(): boolean {')
+      && popoverSource.includes("if (this.mode !== 'suggestion') return false;")
+      && popoverSource.includes("if (this.renderMode !== 'desktop-side-panel') return false;")
+      && popoverSource.includes("if (!this.activeMarkId) return false;")
+      && popoverSource.includes("return this.popover.style.display !== 'none';")
+      && popoverSource.includes("root.style.setProperty('--proof-review-gutter-width'")
       && popoverSource.includes("getSuggestionDisplayMode(this.view.state) !== 'simple'")
+      && popoverSource.includes("this.hideSuggestionRail({ preserveGutter: reserveGutter });")
       && popoverSource.includes("this.suggestionRail.className = 'mark-suggestion-rail';")
       && popoverSource.includes("button.className = 'mark-suggestion-rail-button';")
       && popoverSource.includes('const RAIL_JOIN_THRESHOLD_PX = 30;')
@@ -192,16 +223,33 @@ function run(): void {
       && popoverSource.includes('const optimisticApplied = allowOptimisticAccept ? runLocalActionOnly() : false;')
       && popoverSource.includes('return acceptSuggestion(this.view, markId);')
       && popoverSource.includes('setReviewButtonsBusy(true);')
+      && popoverSource.includes('private reviewActionSequence: number = 0;')
+      && popoverSource.includes('const reviewActionSequence = ++this.reviewActionSequence;')
+      && popoverSource.includes("const shouldAdvanceOptimistically = options?.followupMode !== 'close';")
+      && popoverSource.includes('if (nextMarkId) {')
+      && popoverSource.includes('this.navigateToSuggestion(nextMarkId);')
+      && popoverSource.includes('} else {')
+      && popoverSource.includes('this.close();')
+      && popoverSource.includes('if (shouldAdvanceOptimistically && this.reviewActionSequence === reviewActionSequence) {')
+      && popoverSource.includes("this.openForMark(markId, undefined, { source: 'direct' });")
+      && popoverSource.includes('const REVIEW_FOLLOWUP_RETRY_DELAY_MS = 60;')
+      && popoverSource.includes('const REVIEW_FOLLOWUP_MAX_RETRIES = 20;')
       && popoverSource.includes('private suggestionReviewFollowupTimer: number | null = null;')
       && popoverSource.includes('private suggestionReviewTransitionPending: boolean = false;')
       && popoverSource.includes('private getSuggestionReviewFollowupMarkId(')
       && popoverSource.includes('private openSuggestionAfterReview(')
       && popoverSource.includes('this.suggestionReviewTransitionPending = true;')
+      && popoverSource.includes('this.navigateToSuggestion(followupMarkId);')
+      && popoverSource.includes('}, REVIEW_FOLLOWUP_RETRY_DELAY_MS);')
+      && popoverSource.includes('attempt(REVIEW_FOLLOWUP_MAX_RETRIES);')
       && popoverSource.includes("this.suggestionReviewFollowupTimer = window.setTimeout(() => {")
       && popoverSource.includes('if (this.suggestionReviewTransitionPending) {')
       && popoverSource.includes('this.openSuggestionAfterReview(nextMarkId, markId);')
       && popoverSource.includes('private navigateToSuggestion(markId: string | null): void {')
       && popoverSource.includes('this.clearReviewActionRetryTimer();')
+      && popoverSource.includes('const navigated = proof.navigateToMark(markId);')
+      && popoverSource.includes("if (stateActiveMarkId === markId && (this.activeMarkId !== markId || this.popover.style.display === 'none')) {")
+      && popoverSource.includes("this.openForMark(markId, undefined, { source: 'direct' });")
       && popoverSource.includes("this.focusSheetContainer({ immediate: true });")
       && popoverSource.includes('preventMousePointerDown = false,')
       && popoverSource.includes('preventMouseDown = false,')
@@ -212,7 +260,7 @@ function run(): void {
       && popoverSource.includes('if (skipSyntheticClick) return;')
       && popoverSource.includes('if (preventMouseDown) {')
       && popoverSource.includes('openForMark('),
-    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct review entry points, a simple-markup suggestion rail that merges adjacent changed lines into a continuous narrow rail with rounded endcaps and only labels multi-change lines, capture-phase review key handling, persisted review actions that avoid share-mode accept races, retry transient review actions, timer-backed followup reopening for sequential review, and active suggestion navigation that advances after review',
+    'Expected suggestion review UI to support a desktop side panel, typed suggestion badges, hover/direct review entry points, a desktop review gutter plus suggestion rail that merges adjacent changed lines into a continuous narrow rail with rounded endcaps and only labels multi-change lines, capture-phase review key handling, persisted review actions that avoid share-mode accept races, retry transient review actions, timer-backed followup reopening for sequential review, and active suggestion navigation that advances after review',
   );
   const acceptButtonBlock = sliceBetween(
     popoverSource,
@@ -220,21 +268,37 @@ function run(): void {
     "\n    const rejectButton = document.createElement('button');",
   );
   assert(
-    acceptButtonBlock.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId, mark.kind);")
+    acceptButtonBlock.includes("applyButton.textContent = 'Accept & Next';")
+      && acceptButtonBlock.includes("followupMode: event.shiftKey ? 'close' : 'advance',")
+      && acceptButtonBlock.includes("this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId, mark.kind, {")
       && acceptButtonBlock.includes('preventMousePointerDown: false,')
       && acceptButtonBlock.includes('preventMouseDown: false,'),
-    'Expected side-panel Accept to use normal mouse click sequencing so one physical click cannot spill into the next reviewed suggestion after the panel auto-advances',
+    'Expected side-panel Accept to advance by default, stay put on Shift+click, and still use normal mouse click sequencing so one physical click cannot spill into the next reviewed suggestion after the panel auto-advances',
   );
   const rejectButtonBlock = sliceBetween(
     popoverSource,
     "    const rejectButton = document.createElement('button');",
+    '\n\n    const acceptAllButton = document.createElement(\'button\');',
+  );
+  assert(
+    rejectButtonBlock.includes("rejectButton.textContent = 'Reject & Next';")
+      && rejectButtonBlock.includes("followupMode: event.shiftKey ? 'close' : 'advance',")
+      && rejectButtonBlock.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId, mark.kind, {")
+      && rejectButtonBlock.includes('preventMousePointerDown: false,')
+      && rejectButtonBlock.includes('preventMouseDown: false,'),
+    'Expected side-panel Reject to advance by default, stay put on Shift+click, and still use normal mouse click sequencing so one physical click cannot spill into the next reviewed suggestion after the panel auto-advances',
+  );
+  const acceptAllButtonBlock = sliceBetween(
+    popoverSource,
+    "    const acceptAllButton = document.createElement('button');",
     '\n\n    if (canEdit) {',
   );
   assert(
-    rejectButtonBlock.includes("this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId, mark.kind);")
-      && rejectButtonBlock.includes('preventMousePointerDown: false,')
-      && rejectButtonBlock.includes('preventMouseDown: false,'),
-    'Expected side-panel Reject to use normal mouse click sequencing so one physical click cannot spill into the next reviewed suggestion after the panel auto-advances',
+    acceptAllButtonBlock.includes("acceptAllButton.textContent = 'Accept All';")
+      && acceptAllButtonBlock.includes("typeof proof?.acceptAllSuggestions === 'function'")
+      && acceptAllButtonBlock.includes('proof.acceptAllSuggestions();')
+      && acceptAllButtonBlock.includes('this.close();'),
+    'Expected the side-panel review dialog to expose an Accept All action wired to the existing bulk suggestion acceptance API',
   );
   const focusSheetContainerBlock = sliceBetween(
     popoverSource,
@@ -252,6 +316,8 @@ function run(): void {
       && contextMenuSource.includes('suggestionContext')
       && contextMenuSource.includes('data-action="accept-suggestion"')
       && contextMenuSource.includes('data-action="reject-suggestion"')
+      && contextMenuSource.includes('Accept &amp; Next')
+      && contextMenuSource.includes('Reject &amp; Next')
       && contextMenuSource.includes('data-action="review-suggestion"')
       && contextMenuSource.includes('data-action="show-shortcuts"')
       && contextMenuSource.includes("Keyboard shortcuts")
@@ -261,9 +327,11 @@ function run(): void {
       && contextMenuSource.includes('await proof.markRejectPersisted(markId);')
       && contextMenuSource.includes('proof.markAccept(markId);')
       && contextMenuSource.includes('proof.markReject(markId);')
+      && contextMenuSource.includes('proof.markSetActive(markId);')
+      && contextMenuSource.includes('proof.navigateToNextSuggestion();')
       && contextMenuSource.includes('proof.navigateToMark(markId);')
       && contextMenuSource.includes('showContextMenu(view, e.clientX, e.clientY, e.target);'),
-    'Expected right-click review actions to be integrated into the shared editor context menu, prefer the persisted review API, and expose a keyboard-shortcuts reveal sourced from the shared keybinding config',
+    'Expected right-click review actions to be integrated into the shared editor context menu, prefer the persisted review API, advance to the next suggestion by default, and expose a keyboard-shortcuts reveal sourced from the shared keybinding config',
   );
   assert(
     marksSource.includes('function insertAcceptNeedsMaterialization(')

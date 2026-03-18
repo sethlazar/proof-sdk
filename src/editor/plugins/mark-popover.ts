@@ -69,6 +69,9 @@ const SUGGESTION_HOVER_OPEN_DELAY_MS = 120;
 const SUGGESTION_HOVER_CLOSE_DELAY_MS = 180;
 const REVIEW_ACTION_RETRY_DELAY_MS = 150;
 const REVIEW_ACTION_MAX_RETRIES = 12;
+const REVIEW_FOLLOWUP_RETRY_DELAY_MS = 60;
+const REVIEW_FOLLOWUP_MAX_RETRIES = 20;
+const DESKTOP_REVIEW_GUTTER_WIDTH_PX = 360;
 
 type VisibleComment = {
   mark: Mark;
@@ -488,6 +491,7 @@ class MarkPopoverController {
   private suggestionReviewFollowupTimer: number | null = null;
   private suggestionReviewTransitionPending: boolean = false;
   private suggestionRailSignature: string = '';
+  private reviewActionSequence: number = 0;
 
   private getAdjacentSuggestionMarkId(currentMarkId: string, direction: 'next' | 'prev'): string | null {
     const suggestions = getPendingSuggestions(getMarks(this.view.state))
@@ -541,14 +545,14 @@ class MarkPopoverController {
       if (followupMarkId) {
         this.suggestionReviewTransitionPending = false;
         this.suggestionReviewFollowupTimer = null;
-        this.openForMark(followupMarkId, undefined, { source: 'direct' });
+        this.navigateToSuggestion(followupMarkId);
         return;
       }
       if (remainingAttempts > 0) {
         this.suggestionReviewFollowupTimer = window.setTimeout(() => {
           this.suggestionReviewFollowupTimer = null;
           attempt(remainingAttempts - 1);
-        }, 16);
+        }, REVIEW_FOLLOWUP_RETRY_DELAY_MS);
         return;
       }
       this.suggestionReviewTransitionPending = false;
@@ -557,7 +561,7 @@ class MarkPopoverController {
 
     this.suggestionReviewFollowupTimer = window.setTimeout(() => {
       this.suggestionReviewFollowupTimer = null;
-      attempt(8);
+      attempt(REVIEW_FOLLOWUP_MAX_RETRIES);
     }, 0);
   }
 
@@ -566,10 +570,16 @@ class MarkPopoverController {
     this.clearReviewActionRetryTimer();
     const proof = getProofEditorApi();
     if (proof?.navigateToMark) {
-      proof.navigateToMark(markId);
-      return;
+      const navigated = proof.navigateToMark(markId);
+      if (navigated) {
+        const stateActiveMarkId = getActiveMarkId(this.view.state);
+        if (stateActiveMarkId === markId && (this.activeMarkId !== markId || this.popover.style.display === 'none')) {
+          this.openForMark(markId, undefined, { source: 'direct' });
+        }
+        return;
+      }
     }
-    this.openForMark(markId);
+    this.openForMark(markId, undefined, { source: 'direct' });
   }
 
   private hideReviewContextMenu(): void {
@@ -666,20 +676,50 @@ class MarkPopoverController {
     this.scheduleViewportSync();
   };
 
-  private hideSuggestionRail(): void {
+  private hideSuggestionRail(options?: { preserveGutter?: boolean }): void {
     this.suggestionRail.style.display = 'none';
     this.suggestionRail.innerHTML = '';
     this.suggestionRailSignature = '';
+    if (!options?.preserveGutter) {
+      this.syncDesktopReviewGutter(false);
+    }
+  }
+
+  private shouldReserveDesktopReviewGutter(): boolean {
+    if (isMobileTouch()) return false;
+    if (!shouldUseDesktopSuggestionPanel()) return false;
+    if (!this.view.dom.isConnected) return false;
+    if (this.mode !== 'suggestion') return false;
+    if (this.renderMode !== 'desktop-side-panel') return false;
+    if (!this.activeMarkId) return false;
+    return this.popover.style.display !== 'none';
+  }
+
+  private syncDesktopReviewGutter(active: boolean): void {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    const body = document.body;
+    if (!root || !body) return;
+    if (active) {
+      root.style.setProperty('--proof-review-gutter-width', `${DESKTOP_REVIEW_GUTTER_WIDTH_PX}px`);
+      body.dataset.reviewGutter = 'active';
+      return;
+    }
+    root.style.setProperty('--proof-review-gutter-width', '0px');
+    delete body.dataset.reviewGutter;
   }
 
   private renderSuggestionRail(): void {
+    const reserveGutter = this.shouldReserveDesktopReviewGutter();
+    this.syncDesktopReviewGutter(reserveGutter);
+
     if (!this.view.dom.isConnected || isMobileTouch()) {
       this.hideSuggestionRail();
       return;
     }
 
     if (getSuggestionDisplayMode(this.view.state) !== 'simple') {
-      this.hideSuggestionRail();
+      this.hideSuggestionRail({ preserveGutter: reserveGutter });
       return;
     }
 
@@ -995,6 +1035,7 @@ class MarkPopoverController {
   ): void {
     this.clearReviewActionRetryTimer();
     this.hideReviewContextMenu();
+    const reviewActionSequence = ++this.reviewActionSequence;
 
     const setReviewButtonsBusy = (busy: boolean): void => {
       const buttons = Array.from(this.popover.querySelectorAll('.mark-popover-actions button')) as HTMLButtonElement[];
@@ -1049,13 +1090,21 @@ class MarkPopoverController {
         ? () => proof.markRejectPersisted(markId)
         : null);
     if (persistedAction) {
+      const shouldAdvanceOptimistically = options?.followupMode !== 'close';
+      if (shouldAdvanceOptimistically) {
+        if (nextMarkId) {
+          this.navigateToSuggestion(nextMarkId);
+        } else {
+          this.close();
+        }
+      }
       // Persist first in share mode. Optimistic local accepts can race the server and
       // turn valid accepts into "Mark not found" responses, especially for deletions.
       const allowOptimisticAccept = false;
       const optimisticApplied = allowOptimisticAccept ? runLocalActionOnly() : false;
       if (optimisticApplied) {
         finish();
-      } else {
+      } else if (!shouldAdvanceOptimistically) {
         setReviewButtonsBusy(true);
       }
       void persistedAction().then((success) => {
@@ -1063,15 +1112,21 @@ class MarkPopoverController {
           if (!optimisticApplied) {
             setReviewButtonsBusy(false);
           }
+          if (shouldAdvanceOptimistically && this.reviewActionSequence === reviewActionSequence) {
+            this.openForMark(markId, undefined, { source: 'direct' });
+          }
           return;
         }
-        if (!optimisticApplied) {
+        if (!optimisticApplied && !shouldAdvanceOptimistically) {
           finish();
         }
       }).catch((error) => {
         console.error('[mark-popover] Persisted review action failed:', error);
         if (!optimisticApplied) {
           setReviewButtonsBusy(false);
+        }
+        if (shouldAdvanceOptimistically && this.reviewActionSequence === reviewActionSequence) {
+          this.openForMark(markId, undefined, { source: 'direct' });
         }
       });
       return;
@@ -1556,6 +1611,7 @@ class MarkPopoverController {
     this.reviewContextMenu.remove();
     this.suggestionRail.remove();
     this.clearMobileStripPadding();
+    this.syncDesktopReviewGutter(false);
   }
 
   update(view: EditorView): void {
@@ -1752,6 +1808,7 @@ class MarkPopoverController {
     this.hideReviewContextMenu();
     this.popover.style.display = 'block';
     this.popover.classList.toggle('mark-popover-side-panel', this.renderMode === 'desktop-side-panel');
+    this.syncDesktopReviewGutter(this.shouldReserveDesktopReviewGutter());
     if (this.renderMode === 'legacy-popover') {
       this.popover.classList.remove('mark-popover-sheet');
       this.backdrop.style.display = 'none';
@@ -2227,11 +2284,13 @@ class MarkPopoverController {
 
     const applyButton = document.createElement('button');
     applyButton.type = 'button';
-    applyButton.textContent = 'Accept';
-    applyButton.title = 'Accept change (Cmd/Ctrl+Alt+A)';
-    installTouchSafeButton(applyButton, () => {
+    applyButton.textContent = 'Accept & Next';
+    applyButton.title = 'Accept change and move to the next one (Shift+click to stay here, Cmd/Ctrl+Alt+A)';
+    installTouchSafeButton(applyButton, (event) => {
       if (!canEdit) return;
-      this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId, mark.kind);
+      this.runSuggestionReviewAction(mark.id, 'accept', nextMarkId, mark.kind, {
+        followupMode: event.shiftKey ? 'close' : 'advance',
+      });
     }, {
       // Keep touch-safe behavior, but let desktop mouse actions fire on click.
       // Otherwise one physical click can accept the current suggestion on
@@ -2243,11 +2302,31 @@ class MarkPopoverController {
 
     const rejectButton = document.createElement('button');
     rejectButton.type = 'button';
-    rejectButton.textContent = 'Reject';
-    rejectButton.title = 'Reject change (Cmd/Ctrl+Alt+R)';
-    installTouchSafeButton(rejectButton, () => {
+    rejectButton.textContent = 'Reject & Next';
+    rejectButton.title = 'Reject change and move to the next one (Shift+click to stay here, Cmd/Ctrl+Alt+R)';
+    installTouchSafeButton(rejectButton, (event) => {
       if (!canEdit) return;
-      this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId, mark.kind);
+      this.runSuggestionReviewAction(mark.id, 'reject', nextMarkId, mark.kind, {
+        followupMode: event.shiftKey ? 'close' : 'advance',
+      });
+    }, {
+      preventMousePointerDown: false,
+      preventMouseDown: false,
+    });
+
+    const acceptAllButton = document.createElement('button');
+    acceptAllButton.type = 'button';
+    acceptAllButton.textContent = 'Accept All';
+    acceptAllButton.title = 'Accept every pending change in this document';
+    installTouchSafeButton(acceptAllButton, () => {
+      if (!canEdit) return;
+      const proof = getProofEditorApi();
+      if (typeof proof?.acceptAllSuggestions === 'function') {
+        proof.acceptAllSuggestions();
+      } else if (typeof proof?.markAcceptAll === 'function') {
+        proof.markAcceptAll();
+      }
+      this.close();
     }, {
       preventMousePointerDown: false,
       preventMouseDown: false,
@@ -2256,6 +2335,7 @@ class MarkPopoverController {
     if (canEdit) {
       actions.appendChild(applyButton);
       actions.appendChild(rejectButton);
+      actions.appendChild(acceptAllButton);
     }
 
     const previousButton = document.createElement('button');

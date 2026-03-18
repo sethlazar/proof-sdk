@@ -242,9 +242,11 @@ declare global {
 
 const TRACK_CHANGES_VIEW_QUERY_KEY = 'trackChangesView';
 const TRACK_CHANGES_VIEW_STORAGE_KEY = 'proof.trackChangesView';
+const TRACK_CHANGES_VIEW_SIMPLE_ROLLBACK_KEY = 'proof.trackChangesView.simpleRollback20260318';
 
 type ProofConfigWindow = Window & {
   __PROOF_CONFIG__?: {
+    shareSlug?: string;
     trackChangesViewDefaultMode?: string;
   };
 };
@@ -315,8 +317,28 @@ function readTrackChangesViewModeDefault(): SuggestionDisplayMode | null {
   return configured ? normalizeTrackChangesViewMode(configured) : null;
 }
 
+function readTrackChangesViewModeRollback(): SuggestionDisplayMode | null {
+  if (typeof window === 'undefined') return null;
+  const config = (window as ProofConfigWindow).__PROOF_CONFIG__;
+  if (!config?.shareSlug) return null;
+  const defaultMode = readTrackChangesViewModeDefault();
+  if (defaultMode !== 'simple') return null;
+  try {
+    const rollbackState = window.localStorage.getItem(TRACK_CHANGES_VIEW_SIMPLE_ROLLBACK_KEY);
+    if (rollbackState === 'done') return null;
+    const stored = window.localStorage.getItem(TRACK_CHANGES_VIEW_STORAGE_KEY);
+    if (stored !== 'all') return null;
+    window.localStorage.setItem(TRACK_CHANGES_VIEW_STORAGE_KEY, 'simple');
+    window.localStorage.setItem(TRACK_CHANGES_VIEW_SIMPLE_ROLLBACK_KEY, 'done');
+    return 'simple';
+  } catch {
+    return null;
+  }
+}
+
 function getInitialTrackChangesViewMode(): SuggestionDisplayMode {
   return readTrackChangesViewModeFromQuery()
+    ?? readTrackChangesViewModeRollback()
     ?? readTrackChangesViewModeFromStorage()
     ?? readTrackChangesViewModeDefault()
     ?? 'all';

@@ -110,11 +110,11 @@ function createSuggestionActionsMarkup(
       </button>
       <button class="proof-context-menu-item" data-action="accept-suggestion">
         <span class="proof-context-menu-icon">✓</span>
-        <span>Accept change</span>
+        <span>Accept &amp; Next</span>
       </button>
       <button class="proof-context-menu-item" data-action="reject-suggestion">
         <span class="proof-context-menu-icon">✕</span>
-        <span>Reject change</span>
+        <span>Reject &amp; Next</span>
       </button>
       <div class="proof-context-menu-separator"></div>
   `;
@@ -541,30 +541,35 @@ function handleClickOutside(e: MouseEvent): void {
   }
 }
 
-async function runSuggestionAction(action: 'accept' | 'reject', markId: string, view: EditorView): Promise<void> {
+async function runSuggestionAction(
+  action: 'accept' | 'reject',
+  markId: string,
+  view: EditorView,
+  options?: { advance?: boolean },
+): Promise<void> {
   const proof = getProofEditorApi();
+  if (typeof proof?.markSetActive === 'function') {
+    proof.markSetActive(markId);
+  }
   if (action === 'accept') {
     if (typeof proof?.markAcceptPersisted === 'function') {
       await proof.markAcceptPersisted(markId);
-      return;
-    }
-    if (typeof proof?.markAccept === 'function') {
+    } else if (typeof proof?.markAccept === 'function') {
       proof.markAccept(markId);
-      return;
+    } else {
+      acceptSuggestionMark(view, markId);
     }
-    acceptSuggestionMark(view, markId);
-    return;
+  } else if (typeof proof?.markRejectPersisted === 'function') {
+    await proof.markRejectPersisted(markId);
+  } else if (typeof proof?.markReject === 'function') {
+    proof.markReject(markId);
+  } else {
+    rejectSuggestionMark(view, markId);
   }
 
-  if (typeof proof?.markRejectPersisted === 'function') {
-    await proof.markRejectPersisted(markId);
-    return;
+  if (options?.advance && typeof proof?.navigateToNextSuggestion === 'function') {
+    proof.navigateToNextSuggestion();
   }
-  if (typeof proof?.markReject === 'function') {
-    proof.markReject(markId);
-    return;
-  }
-  rejectSuggestionMark(view, markId);
 }
 
 function reviewSuggestion(markId: string): void {
@@ -591,9 +596,11 @@ async function handleAction(action: string): Promise<void> {
       reviewSuggestion(markId);
       return;
     }
-    await runSuggestionAction(action === 'accept-suggestion' ? 'accept' : 'reject', markId, view);
-    return;
-  }
+      await runSuggestionAction(action === 'accept-suggestion' ? 'accept' : 'reject', markId, view, {
+        advance: true,
+      });
+      return;
+    }
 
   if (!selectionContext) {
     closeMenu();
